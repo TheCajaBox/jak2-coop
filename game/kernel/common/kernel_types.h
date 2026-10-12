@@ -146,6 +146,33 @@ const int MAX_MULTIPLAYER_COUNT = 20;
 const int MAX_COMMAND_COUNT = 3;
 const int MAX_INTERACTION_BUFFER_COUNT = 20;
 
+// Jak 2 co-op: host-authoritative enemies + joining the host's save.
+// 48 bytes so GOAL's inline array stride matches (16-byte aligned).
+struct CoopEnemy {
+  u32 aid;  // entity actor id
+  float x, y, z;
+  float qx, qy, qz, qw;
+  s32 anim;  // index in the enemy's own art group, -1 = unknown
+  float frame;
+  s32 hp;
+  s32 flags;
+};
+
+const int MAX_COOP_ENEMIES = 64;
+
+struct CoopInfo {
+  s32 role;             // 0 = none, 1 = host, 2 = guest (set by the relay)
+  s32 save_requested;   // host: relay wants our save for a joining guest
+  s32 save_incoming;    // guest: byte size of a received host save waiting to be taken
+  s32 enemy_out_count;  // host: entries filled in enemy_out, C++ clears it once sent
+  s32 enemy_in_count;   // guest: entries received from the host
+  s32 enemy_in_seq;     // guest: bumped on every enemy update received
+  s32 alert_out;        // host: city alert level (guards), -1 = not in the city
+  s32 alert_in;         // guest: host's city alert level
+  CoopEnemy enemy_out[MAX_COOP_ENEMIES];
+  CoopEnemy enemy_in[MAX_COOP_ENEMIES];
+};
+
 struct MultiplayerInfo {
   u32 teamrun_command;
   u32 force_continue;       // string (basic)

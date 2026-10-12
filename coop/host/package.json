@@ -1,0 +1,6 @@
+{
+  "name": "jak2-coop-relay",
+  "private": true,
+  "description": "Relay for Jak 2 co-op (see README)",
+  "dependencies": { "ws": "^8.11.0" }
+}

@@ -5,6 +5,8 @@
 ;; name in dgo: collectables
 ;; dgos: ENGINE, GAME
 
+(define-extern mp-on-local-pickup (function process-drawable none)) ;; teamruns jak2 co-op (mod-custom-code)
+
 (defenum collectable-flag
   :type uint32
   :bitfield #t
@@ -373,6 +375,7 @@
   )
 
 (defmethod do-pickup ((this collectable) (arg0 handle))
+  (mp-on-local-pickup this) ;; teamruns jak2 co-op: share orb/gem pickups
   (set! (-> this pickup-handle) arg0)
   (logclear! (-> this mask) (process-mask actor-pause))
   (let ((v1-3 (-> this root root-prim)))

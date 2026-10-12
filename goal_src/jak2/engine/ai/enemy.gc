@@ -5,6 +5,10 @@
 ;; name in dgo: enemy
 ;; dgos: GAME, COMMON
 
+;; teamruns jak2 co-op (mod-custom-code): shared enemy deaths and hit points scaled by player count
+(define-extern mp-on-enemy-dying (function process-drawable none))
+(define-extern mp-scale-enemy-hp (function process-drawable int int))
+
 ;; DECOMP BEGINS
 
 (defmethod copy-enemy-info! ((this enemy-info) (obj-to-copy enemy-info))
@@ -988,6 +992,7 @@
       (set! (-> this hit-points) (* (-> this enemy-info default-hit-points) 2))
       (set! (-> this hit-points) (-> this enemy-info default-hit-points))
       )
+  (set! (-> this hit-points) (mp-scale-enemy-hp this (-> this hit-points))) ;; teamruns jak2 co-op
   (let* ((v1-38 *game-info*)
          (a0-10 (+ (-> v1-38 attack-id) 1))
          )
@@ -3321,6 +3326,7 @@
 (defmethod dying ((this enemy))
   "Cleans-up the enemy and any associated resources. Potentially spawns skull gems"
   (when (not (logtest? (enemy-flag called-dying) (-> this enemy-flags)))
+    (mp-on-enemy-dying this) ;; teamruns jak2 co-op: share the kill (before spawn-gem gets set below)
     (set! (-> this enemy-flags) (the-as enemy-flag (logior (enemy-flag called-dying) (-> this enemy-flags))))
     (play-damage-or-death-sound this 1)
     (when (and (>= (-> this enemy-info gem-joint) 0)

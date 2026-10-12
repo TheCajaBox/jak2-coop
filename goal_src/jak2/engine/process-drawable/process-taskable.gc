@@ -5,6 +5,8 @@
 ;; name in dgo: process-taskable
 ;; dgos: GAME, COMMON
 
+(define-extern mp-mission-gate-open? (function symbol)) ;; teamruns jak2 co-op (mod-remote-player)
+
 ;; DECOMP BEGINS
 
 ;; WARN: Return type mismatch process-focusable vs process-taskable.
@@ -246,7 +248,16 @@
                (set! (-> s5-1 flags) (font-flags shadow kerning middle-vert large))
                (print-game-text (lookup-text! *common-text* (-> self talk-message) #f) s5-1 #f 44 (bucket-id progress))
                )
-             (when (cpad-pressed? 0 triangle)
+             (when (and (cpad-pressed? 0 triangle)
+                        ;; teamruns jak2 co-op: missions/races only start with the partner nearby
+                        (or (mp-mission-gate-open?)
+                            (begin
+                              (logclear! (-> *cpad-list* cpads 0 button0-abs 0) (pad-buttons triangle))
+                              (logclear! (-> *cpad-list* cpads 0 button0-rel 0) (pad-buttons triangle))
+                              #f
+                              )
+                            )
+                        )
                (logclear! (-> *cpad-list* cpads 0 button0-abs 0) (pad-buttons triangle))
                (logclear! (-> *cpad-list* cpads 0 button0-rel 0) (pad-buttons triangle))
                (case (-> gp-0 action)

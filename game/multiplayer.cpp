@@ -1,4 +1,8 @@
 #include "multiplayer.h"
+
+#include <cstring>
+#include <mutex>
+#include <vector>
 #include "game/kernel/common/kmachine.h"
 
 // Custom logger
@@ -14,6 +18,45 @@ MultiplayerInfo* gMultiplayerInfo;
 RemotePlayerInfo* gSelfPlayerInfo;
 TeamrunPlayerInfo* gTeamrunInfo;
 TeamrunLevelInfo* gTeamrunLevelInfo;
+
+CoopInfo* gCoopInfo = nullptr;
+std::mutex coopSaveMutex;
+std::vector<u8> coopIncomingSave;
+
+static const char* B64 = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+
+static std::string base64_encode(const u8* data, size_t len) {
+  std::string out;
+  out.reserve(((len + 2) / 3) * 4);
+  for (size_t i = 0; i < len; i += 3) {
+    u32 n = data[i] << 16;
+    if (i + 1 < len) n |= data[i + 1] << 8;
+    if (i + 2 < len) n |= data[i + 2];
+    out.push_back(B64[(n >> 18) & 63]);
+    out.push_back(B64[(n >> 12) & 63]);
+    out.push_back(i + 1 < len ? B64[(n >> 6) & 63] : '=');
+    out.push_back(i + 2 < len ? B64[n & 63] : '=');
+  }
+  return out;
+}
+
+static std::vector<u8> base64_decode(const std::string& in) {
+  std::vector<u8> out;
+  out.reserve(in.size() * 3 / 4);
+  u32 buf = 0;
+  int bits = 0;
+  for (char c : in) {
+    const char* p = strchr(B64, c);
+    if (c == '=' || !p || !c) continue;
+    buf = (buf << 6) | (u32)(p - B64);
+    bits += 6;
+    if (bits >= 8) {
+      bits -= 8;
+      out.push_back((u8)((buf >> bits) & 0xff));
+    }
+  }
+  return out;
+}
 
 int commandBuffer[MAX_COMMAND_COUNT] = { 0, 0, 0 };
 InteractionInfo interactionBuffer[MAX_INTERACTION_BUFFER_COUNT];
@@ -35,6 +78,41 @@ using websocketpp::lib::placeholders::_1;
 using websocketpp::lib::placeholders::_2;
 
 typedef server::message_ptr message_ptr;
+
+void connect_coop_info(u64 coopInfo) {
+  gCoopInfo = Ptr<CoopInfo>(coopInfo).c();
+  lg::info("Co-op info connected");
+}
+
+// host: send our (in memory) save to the relay, which forwards it to joining guests
+u64 coop_send_save(u64 src, u64 size) {
+  if (!isConnectedOverSocket || size == 0)
+    return 0;
+  json payload = {{"coopSave", base64_encode(Ptr<u8>(src).c(), size)}};
+  try {
+    ogSocket.send(connection, payload.dump(), websocketpp::frame::opcode::text);
+    lg::info("Co-op: sent host save ({} bytes)", size);
+  } catch (websocketpp::exception const& e) {
+    lg::warn("Co-op: sending save failed");
+    return 0;
+  }
+  return size;
+}
+
+// guest: copy a received host save into GOAL memory, returns bytes copied (0 if none or too big)
+u64 coop_take_save(u64 dst, u64 max_size) {
+  std::lock_guard<std::mutex> lock(coopSaveMutex);
+  size_t n = coopIncomingSave.size();
+  if (n == 0 || n > max_size)
+    n = 0;
+  else
+    memcpy(Ptr<u8>(dst).c(), coopIncomingSave.data(), n);
+  coopIncomingSave.clear();
+  if (gCoopInfo)
+    gCoopInfo->save_incoming = 0;
+  return n;
+}
+
 
 void on_open(websocketpp::connection_hdl hdl) {
   connection = hdl;
@@ -195,6 +273,36 @@ void on_json_message(server* s, websocketpp::connection_hdl hdl, message_ptr msg
         if (hasOverflow) {
           lg::warn("Interaction buffer overflow!");
         }
+      }
+    } else if (section.key().compare("coopRole") == 0) {
+      if (gCoopInfo) gCoopInfo->role = section.value();
+    } else if (section.key().compare("alert") == 0) {
+      if (gCoopInfo) gCoopInfo->alert_in = section.value();
+    } else if (section.key().compare("requestSave") == 0) {
+      if (gCoopInfo) gCoopInfo->save_requested = 1;
+    } else if (section.key().compare("coopSave") == 0) {
+      std::vector<u8> data = base64_decode(section.value().get<std::string>());
+      std::lock_guard<std::mutex> lock(coopSaveMutex);
+      coopIncomingSave = std::move(data);
+      if (gCoopInfo) gCoopInfo->save_incoming = (s32)coopIncomingSave.size();
+      lg::info("Co-op: received host save ({} bytes)", coopIncomingSave.size());
+    } else if (section.key().compare("enemies") == 0) {
+      if (gCoopInfo && section.value().is_array()) {
+        int count = 0;
+        for (const auto& e : section.value()) {
+          if (count >= MAX_COOP_ENEMIES) break;
+          if (!e.is_array() || e.size() < 11) continue;
+          CoopEnemy& out = gCoopInfo->enemy_in[count++];
+          out.aid = e[0].get<u32>();
+          out.x = e[1].get<float>(); out.y = e[2].get<float>(); out.z = e[3].get<float>();
+          out.qx = e[4].get<float>(); out.qy = e[5].get<float>(); out.qz = e[6].get<float>(); out.qw = e[7].get<float>();
+          out.anim = e[8].get<s32>();
+          out.frame = e[9].get<float>();
+          out.hp = e[10].get<s32>();
+          out.flags = e.size() > 11 ? e[11].get<s32>() : 0;
+        }
+        gCoopInfo->enemy_in_count = count;
+        gCoopInfo->enemy_in_seq += 1;
       }
     } else if (section.key().compare("version") == 0) {
       std::string buildVersion = section.value();
@@ -495,6 +603,22 @@ void send_position_update() {
       {"status", Ptr<String>(gTeamrunLevelInfo->level1_status).c()->data()}
       }
     });
+  }
+
+  if (gCoopInfo && gCoopInfo->role != 0 && gCoopInfo->enemy_out_count > 0) {  // every player sends the enemies it controls
+    json enemies = json::array();
+    for (int i = 0; i < gCoopInfo->enemy_out_count && i < MAX_COOP_ENEMIES; i++) {
+      const CoopEnemy& e = gCoopInfo->enemy_out[i];
+      enemies.push_back({e.aid, e.x, e.y, e.z, e.qx, e.qy, e.qz, e.qw, e.anim, e.frame, e.hp, e.flags});
+    }
+    json_payload["enemies"] = enemies;
+    gCoopInfo->enemy_out_count = 0;
+  }
+
+  static int lastAlertSent = -1;
+  if (gCoopInfo && gCoopInfo->role == 1 && gCoopInfo->alert_out != lastAlertSent) {
+    json_payload["alert"] = gCoopInfo->alert_out;
+    lastAlertSent = gCoopInfo->alert_out;
   }
 
   if (bufferInteractionCount > 5) {

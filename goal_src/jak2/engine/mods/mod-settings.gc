@@ -21,7 +21,7 @@
 (defconstant MAX_USERNAME_LEN 100)
 (defconstant NOTIFIFCATION_STRING_LEN 100)
 (defconstant INTERACTION_STRING_LEN 32)
-(defconstant MAX_MULTIPLAYER_COUNT 20)
+;; MAX_MULTIPLAYER_COUNT is defined in kernel-defs.gc (needed by mod-settings-h)
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Multiplayer Type Constructors

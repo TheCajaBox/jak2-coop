@@ -15,5 +15,8 @@ void connect_mp_info(u64 mpInfo, u64 selfPlayerInfo, u64 teamrunInfo, u64 teamru
 void clear_mp_command();
 void send_position_update();
 void send_repl_connection_acknowledgement();
+void connect_coop_info(u64 coopInfo);
+u64 coop_send_save(u64 src, u64 size);
+u64 coop_take_save(u64 dst, u64 max_size);
 
 //extern char username[101];

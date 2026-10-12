@@ -1,0 +1,51 @@
+JAK 2 CO-OP
+===========
+Guia visual completa / full visual guide: https://thecajabox.github.io/jak2-coop/
+(English: see README.txt)
+
+Que necesitas
+-------------
+- NO hace falta tener OpenGOAL instalado: este paquete ya lo trae.
+- Windows 10 u 11 de 64 bits, unos 10 GB libres, grafica con OpenGL 4.3.
+- Tu propia ISO de Jak 2 (PS2). No se incluye ningun archivo del juego.
+- Internet durante la instalacion (se instalan solos el "Visual C++ Runtime" y, si hace falta, Tailscale).
+- Solo el host: Node.js (https://nodejs.org).
+
+Instalacion (cada jugador, una vez)
+-----------------------------------
+1. Descomprime esta carpeta donde quieras, por ejemplo D:\Juegos\jak2-coop
+2. Arrastra tu ISO de Jak 2 encima de SETUP.bat. Tarda 10-30 minutos, espera a "Done!".
+3. Abre NETWORK-SETUP.bat y acepta el permiso de administrador:
+     1 = misma casa que el host (mismo Wi-Fi)
+     2 = otra casa (usa Tailscale: ANTES acepta la invitacion que te mando el host)
+   Al final aparece una direccion (192.168.x.x o 100.x.x.x): mandasela al host.
+
+Host (una persona)
+------------------
+- Instala el juego como uno mas y lee host\LEEME-HOST.txt.
+- En host\players.txt van todos los jugadores. El PRIMERO es el host.
+
+Partidas
+--------
+- La partida es la del HOST. Al conectarte, tu juego carga la partida del host (mismo progreso y sitio).
+- Tu propia partida no se toca: mientras estas unido no se autoguarda.
+- Al terminar, guarda el host. La proxima vez os volveis a unir y seguis desde ahi.
+- La primera vez que juegues solo, guarda desde el menu de pausa en una ranura para que funcione el autoguardado.
+
+Para jugar (cada vez)
+---------------------
+1. Todos abren PLAY.bat. El host carga SU partida; los demas cualquiera (se cambia sola).
+2. El host abre host\START-RELAY.bat y lo deja abierto.
+
+Que se comparte
+---------------
+- Os veis en tiempo real, con nombre encima.
+- Enemigos: cada uno lo controla el jugador mas cercano; los golpes de todos cuentan y las muertes llegan a todos.
+- Guardias de la ciudad (cerca del host) y la alerta de la ciudad.
+- Misiones, orbes y gemas: lo cogido desaparece para todos.
+- Puerta de mision: las misiones y carreras solo empiezan si estais juntos ("Esperando a...").
+
+Actualizar
+----------
+Cierra el juego, descomprime el zip nuevo ENCIMA de la carpeta y abre UPDATE.bat (1-2 min).
+Tus partidas y tu players.txt no se tocan.

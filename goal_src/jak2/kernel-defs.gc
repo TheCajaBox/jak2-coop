@@ -430,3 +430,13 @@
 (define-extern pc-connect-mp-info (function multiplayer-info remote-player-info teamrun-player-info game-levels-info none))
 (define-extern pc-clear-mp-command (function none))
 (define-extern pc-update-position (function none))
+
+;; teamruns multiplayer (used by mod-settings-h type sizes)
+(defconstant MAX_MULTIPLAYER_COUNT 20)
+(defconstant MAX_COOP_ENEMIES 64)
+
+;; jak2 co-op (game/multiplayer.cpp)
+(declare-type coop-info structure)
+(define-extern pc-coop-connect (function coop-info none))
+(define-extern pc-coop-send-save (function pointer int int))
+(define-extern pc-coop-take-save (function pointer int int))

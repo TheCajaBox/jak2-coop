@@ -2308,7 +2308,13 @@ auto-save-post
   0
   )
 
+(define-extern coop-block-autosave? (function symbol)) ;; teamruns jak2 co-op (mod-coop)
+
 (defun auto-save-user ()
+  ;; a co-op guest is playing the host's save: never autosave it over their own slot
+  (if (coop-block-autosave?)
+      (return #f)
+      )
   (case *kernel-boot-message*
     (('play 'preview)
      (#when PC_PORT

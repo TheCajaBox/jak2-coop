@@ -1,0 +1,375 @@
+;;-*-Lisp-*-
+(in-package goal)
+
+;; name: mod-remote-player.gc
+;; name in dgo: mod-remote-player
+;; dgos: GAME
+
+;; Draws other Teamruns players in Jak 2 as animated "puppet" Jaks.
+;;
+;; Unlike Jak 1 (which spawns full extra `target` processes), Jak 2's target code assumes a single
+;; *target*, so remote players are lightweight process-drawables using Jak's skeleton (skel-jchar).
+;; Animation is mirrored directly: the sender packs the index of its current jakb animation into
+;; tgt_state and the frame number into zoomer_rot_y (both are passed through the client untouched).
+
+(define *remote-anim-cache-group* (the-as art-joint-anim #f))
+(define *remote-anim-cache-idx* -1)
+
+(defun target-anim-index ((tgt target))
+  "Index of [[target]]'s current root animation inside its art group, or -1."
+  (let ((ch (-> tgt skel root-channel 0))
+        (ag (-> tgt draw art-group)))
+    (cond
+      ((or (not ch) (not ag) (not (-> ch frame-group)))
+       -1
+       )
+      ((= (-> ch frame-group) *remote-anim-cache-group*)
+       *remote-anim-cache-idx*
+       )
+      (else
+        (let ((found -1))
+          (dotimes (i (-> ag length))
+            (when (= (-> ag data i) (-> ch frame-group))
+              (set! found i)
+              (set! i (-> ag length))
+              )
+            )
+          (set! *remote-anim-cache-group* (-> ch frame-group))
+          (set! *remote-anim-cache-idx* found)
+          found
+          )
+        )
+      )
+    )
+  )
+
+(defun target-anim-frame ((tgt target))
+  (let ((ch (-> tgt skel root-channel 0)))
+    (if ch (-> ch frame-num) 0.0)
+    )
+  )
+
+(defun mp-draw-name-tag ((text string) (pos vector))
+  "Draw a name above a remote player. Same projection as internal-draw-debug-text-3d,
+   but on the normal display buffer so it also works without -debug (needed for saves)."
+  (let ((head (new 'stack-no-clear 'vector))
+        (screen-pos (new 'stack-no-clear 'vector4w)))
+    (vector+! head pos (new 'static 'vector :y 10240.0 :w 1.0)) ;; ~2.5m above the feet
+    (set! (-> screen-pos quad) (the-as uint128 0))
+    (when (transform-point-qword! screen-pos head)
+      (with-dma-buffer-add-bucket ((buf (-> *display* frames (-> *display* on-screen) global-buf))
+                                   (bucket-id subtitle))
+        (let ((font-ctx (new 'stack 'font-context *font-default-matrix*
+                             (+ -1792 (/ (-> screen-pos x) 16))
+                             (+ -1855 (/ (-> screen-pos y) 16))
+                             0.0
+                             (font-color default)
+                             (font-flags shadow kerning middle))))
+          (set! (-> font-ctx origin z) (the float (/ (-> screen-pos z) 16)))
+          (draw-string text buf font-ctx)
+          )
+        )
+      )
+    )
+  (none)
+  )
+
+(deftype remote-jak (process-drawable)
+  ((player-idx int32)
+   (anim-idx   int32)
+   )
+  (:state-methods
+    idle
+    )
+  )
+
+(defun remote-jak-apply-info ((this remote-jak))
+  (let ((p (-> *multiplayer-info* players (-> this player-idx))))
+    (set-vector! (-> this root trans) (-> p trans_x) (-> p trans_y) (-> p trans_z) 1.0)
+    (set! (-> this root quat x) (-> p quat_x))
+    (set! (-> this root quat y) (-> p quat_y))
+    (set! (-> this root quat z) (-> p quat_z))
+    (set! (-> this root quat w) (-> p quat_w))
+    (apply-player-color this (-> p color))
+    (if (= (-> p mp_state) (mp-tgt-state mp-tgt-disconnected))
+      (logior! (-> this draw status) (draw-control-status no-draw))
+      (logclear! (-> this draw status) (draw-control-status no-draw))
+      )
+    (if (and (!= (-> p mp_state) (mp-tgt-state mp-tgt-disconnected)) (nonzero? (length (-> p username))))
+      (mp-draw-name-tag (-> p username) (-> this root trans))
+      )
+    )
+  (none)
+  )
+
+(defun mp-in-level-heap? ((obj object))
+  "Some jakb animations are lent by level DGOs (linked into the art group on load, freed on unload).
+   A puppet must never hold one: when that level unloads the pointer dangles and the game crashes."
+  (dotimes (i (-> *level* length))
+    (let ((heap (-> *level* level i heap)))
+      (if (and (>= (the-as int obj) (the-as int (-> heap base))) (< (the-as int obj) (the-as int (-> heap top-base))))
+        (return #t)
+        )
+      )
+    )
+  #f
+  )
+
+(defstate idle (remote-jak)
+  :virtual #t
+  :code (behavior ()
+    (loop
+      (let* ((p (-> *multiplayer-info* players (-> self player-idx)))
+             (ag (-> self draw art-group))
+             (idx (the int (the-as uint (-> p tgt_state))))
+             (frame (-> p zoomer_rot_y))
+             )
+        ;; only always-loaded (GAME) animations, anything else falls back to standing
+        (when (not (and (>= idx 0) (< idx (-> ag length))
+                        (type? (-> ag data idx) art-joint-anim)
+                        (not (mp-in-level-heap? (-> ag data idx)))))
+          (set! idx -1)
+          )
+        (let ((anim (if (>= idx 0) (the-as art-joint-anim (-> ag data idx)) jakb-stance-loop-ja)))
+          (if (!= idx (-> self anim-idx))
+            (ja-channel-push! 1 (seconds 0.05))
+            )
+          (set! (-> self anim-idx) idx)
+          (ja :group! anim
+              :num! (identity (if (>= idx 0) (fmax 0.0 (fmin frame (the float (ja-num-frames 0)))) 0.0)))
+          )
+        )
+      (suspend)
+      )
+    )
+  :post (behavior ()
+    (remote-jak-apply-info self)
+    (ja-post)
+    )
+  )
+
+(defbehavior remote-jak-init-by-other remote-jak ((idx int))
+  (set! (-> self player-idx) idx)
+  (set! (-> self anim-idx) -1)
+  (set! (-> self root) (new 'process 'trsqv))
+  (initialize-skeleton
+    self
+    (the-as skeleton-group (art-group-get-by-name *level* "skel-jchar" (the-as (pointer uint32) #f)))
+    (the-as pair 0)
+    )
+  (set! (-> self draw light-index) (the-as uint 30))
+  (set! (-> self draw lod-set max-lod) 0)
+  (remote-jak-apply-info self)
+  (go-virtual idle)
+  (none)
+  )
+
+(defun remote-jak-spawn ((idx int))
+  (let ((proc (process-spawn remote-jak idx :name "remote-jak" :to *entity-pool*)))
+    (if proc (ppointer->handle proc) (the-as handle #f))
+    )
+  )
+
+(defun remote-jak-despawn ((idx int))
+  (let ((proc (handle->process (-> *remote-targets* idx))))
+    (if proc (deactivate proc))
+    )
+  (set! (-> *remote-targets* idx) (the-as handle #f))
+  (none)
+  )
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Mission gate: missions and races only start when every co-op partner is close
+;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(defconstant MP_GATE_DISTANCE 61440.0) ;; 15 m
+
+(define *mp-gate-blocked-time* (the-as time-frame 0))
+(define *mp-gate-waiting-for* (new 'global 'string 100 (the-as string #f)))
+(define *mp-gate-text* (new 'global 'string 256 (the-as string #f)))
+
+(defun mp-mission-gate-open? ()
+  "Called when the player presses triangle on a mission giver / race. Each player still starts the mission
+   in their own game, this only makes sure you're together. Solo (nobody connected) always passes."
+  (let ((pos (target-pos 0))
+        (v (new 'stack-no-clear 'vector)))
+    (dotimes (idx MAX_MULTIPLAYER_COUNT)
+      (when (and (!= idx (-> *multiplayer-info* player_num)) (is-interactive? idx))
+        (let ((p (-> *multiplayer-info* players idx)))
+          (set-vector! v (-> p trans_x) (-> p trans_y) (-> p trans_z) 1.0)
+          (when (> (vector-vector-distance pos v) MP_GATE_DISTANCE)
+            (copy-string<-string *mp-gate-waiting-for* (-> p username))
+            (set-time! *mp-gate-blocked-time*)
+            (return #f)
+            )
+          )
+        )
+      )
+    )
+  #t
+  )
+
+(defun mp-draw-gate-message ()
+  (when (and (nonzero? *mp-gate-blocked-time*) (not (time-elapsed? *mp-gate-blocked-time* (seconds 3))))
+    (format (clear *mp-gate-text*) "Esperando a ~S... / Waiting for ~S..." *mp-gate-waiting-for* *mp-gate-waiting-for*)
+    (let ((ctx (new 'stack 'font-context *font-default-matrix* 32 160 0.0 (font-color default) (font-flags shadow kerning))))
+      (set! (-> ctx width) (the float 450))
+      (set! (-> ctx height) (the float 40))
+      (set! (-> ctx flags) (font-flags shadow kerning middle large))
+      (print-game-text *mp-gate-text* ctx #f 44 (bucket-id progress))
+      )
+    )
+  (none)
+  )
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Shared Progress
+;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(define-extern coop-host? (function symbol)) ;; mod-coop
+(define-extern coop-host-apply-hit (function string int none))
+
+;; Items a teammate collected in a level we don't have loaded yet. Retried (one per frame) until the level loads.
+(defconstant MP_PENDING_PICKUP_MAX 256)
+(define *mp-pending-pickups* (new 'global 'boxed-array string MP_PENDING_PICKUP_MAX))
+(dotimes (i MP_PENDING_PICKUP_MAX)
+  (set! (-> *mp-pending-pickups* i) (new 'global 'string INTERACTION_STRING_LEN (the-as string #f)))
+  )
+(define *mp-pending-pickup-idx* 0)
+
+(defun kill-entity-by-name ((name string))
+  "Mark a placed entity as collected and remove it if it's alive. #t if the entity is currently loaded."
+  (let ((ent (the-as entity-actor (entity-by-name name))))
+    (when (and ent (type? ent entity-actor))
+      (logior! (-> ent extra perm status) (entity-perm-status dead))
+      (let ((proc (-> ent extra process)))
+        (if proc
+          (deactivate proc)
+          )
+        )
+      #t
+      )
+    )
+  )
+
+(defun remove-remote-pickup ((name string))
+  (when (nonzero? (length name))
+    (when (not (kill-entity-by-name name))
+      ;; not loaded here, remember it
+      (let ((slot -1))
+        (dotimes (i MP_PENDING_PICKUP_MAX)
+          (when (zero? (length (-> *mp-pending-pickups* i)))
+            (set! slot i)
+            (set! i MP_PENDING_PICKUP_MAX)
+            )
+          )
+        (if (>= slot 0)
+          (mp-copy-string! (-> *mp-pending-pickups* slot) name)
+          (format 0 "Teamruns: pending pickup list full, dropped ~S~%" name)
+          )
+        )
+      )
+    )
+  (none)
+  )
+
+(defun process-pending-remote-pickups ()
+  "Check one pending item per frame, cheap enough to run always."
+  (let ((name (-> *mp-pending-pickups* *mp-pending-pickup-idx*)))
+    (if (and (nonzero? (length name)) (kill-entity-by-name name))
+      (clear name)
+      )
+    )
+  (set! *mp-pending-pickup-idx* (mod (+ *mp-pending-pickup-idx* 1) MP_PENDING_PICKUP_MAX))
+  (none)
+  )
+
+(defun mp-kill-remote-enemy ((name string))
+  "A teammate killed this enemy: kill ours too, if it's loaded and alive. No gem drop (they got it)."
+  (let ((ent (the-as entity-actor (entity-by-name name))))
+    (when (and ent (type? ent entity-actor))
+      (let ((proc (-> ent extra process)))
+        (when (and proc (type? proc enemy) (> (-> (the-as enemy proc) hit-points) 0))
+          (logior! (-> (the-as enemy proc) enemy-flags) (enemy-flag spawn-gem))
+          (send-event proc 'instant-death)
+          )
+        )
+      )
+    )
+  (none)
+  )
+
+(defun apply-remote-interaction ((p remote-player-info))
+  "Apply a teammate's progress (mission, skull gems, precursor orbs) to the local game.
+   The local trackers are bumped too, so the polling in mod-custom-code doesn't echo it back."
+  (case (-> p inter_type)
+    (((interaction-type game-task))
+     (let ((task (the int (-> p inter_amount))))
+       (when (and (> task 0) (< task MAX_GAME_TASKS) (not (task-complete? *game-info* (the-as game-task task))))
+         (format 0 "Teamruns: teammate completed ~S~%" (-> p inter_name))
+         (set! (-> *task-tracker* sent task) (the uint8 1))
+         (task-resolution-close! (the-as game-task task))
+         )
+       )
+     )
+    (((interaction-type enemy-death))
+     (mp-kill-remote-enemy (-> p inter_name))
+     )
+    (((interaction-type enemy-hit))
+     ;; applied by whoever drives that enemy (coop-damage-enemy ignores our copies)
+     (coop-host-apply-hit (-> p inter_name) (max 1 (the int (-> p inter_amount))))
+     )
+    (((interaction-type gem))
+     (+! (-> *game-info* gem) (-> p inter_amount))
+     (+! (-> *game-info* gem-total) (-> p inter_amount))
+     (remove-remote-pickup (-> p inter_name))
+     )
+    (((interaction-type skill))
+     (+! (-> *game-info* skill) (-> p inter_amount))
+     (+! (-> *game-info* skill-total) (-> p inter_amount))
+     (remove-remote-pickup (-> p inter_name))
+     )
+    )
+  (none)
+  )
+
+(defun handle-remote-interactions ()
+  (when (and *target* (not *pause-multiplayer-logic*))
+    (dotimes (idx MAX_MULTIPLAYER_COUNT)
+      (let ((p (-> *multiplayer-info* players idx)))
+        (when (and (!= idx (-> *multiplayer-info* player_num))
+                   (is-interactive? idx)
+                   (!= (-> p inter_type) (interaction-type none))
+                   ;; closing a mission mid level-load or mid cutscene can crash/softlock, keep it until we're idle
+                   ;; (the C++ side buffers newer interactions meanwhile)
+                   (not (and (= (-> p inter_type) (interaction-type game-task))
+                             (or (!= (-> *level* loading-level) (-> *level* default-level)) (movie?) (not (-> *target* control))))))
+          (if (zero? (-> p inter_cleanup))
+            (apply-remote-interaction p)
+            )
+          (clean-up-interaction-data p)
+          )
+        )
+      )
+    )
+  (none)
+  )
+
+(defun render-remote-players ()
+  "Spawn, keep alive or remove one remote-jak per connected remote player. Runs every frame."
+  (dotimes (idx MAX_MULTIPLAYER_COUNT)
+    (when (!= idx (-> *multiplayer-info* player_num))
+      (cond
+        ((or (is-disconnected? idx) (not *target*))
+         (if (and (nonzero? (-> *remote-targets* idx)) (handle->process (-> *remote-targets* idx)))
+           (remote-jak-despawn idx)
+           )
+         )
+        ((or (zero? (-> *remote-targets* idx)) (not (handle->process (-> *remote-targets* idx))))
+         (set! (-> *remote-targets* idx) (remote-jak-spawn idx))
+         )
+        )
+      )
+    )
+  (none)
+  )

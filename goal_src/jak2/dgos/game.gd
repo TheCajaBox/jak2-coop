@@ -469,8 +469,10 @@
   "entity-debug.o" ;; added
   "mod-settings.o" ;; added ;;mod-base-change
   "mod-game-handler.o" ;; multiplayer
+  "mod-remote-player.o" ;; jak2 co-op remote players
   "mod-common-functions.o" ;; added
   "orb-placer.o"  ;; added
   "mod-custom-code.o" ;; added
+  "mod-coop.o" ;; jak2 co-op: host save join + host-driven enemies
   "mod-debug.o" ;; added
  ))

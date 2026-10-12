@@ -35,13 +35,13 @@ Down lets you edit buttons, left lets you edit the sticks, right for dpad, up to
 (defun draw-face-buttons ((arg0 dma-buffer))
     ;Face buttons. Each button needed added to text-h.gc and english texts
     (when (cpad-hold? 0 triangle)
-        (draw-string-xy (lookup-text! *common-text* (text-id pad-triangle) #f) arg0 (+ (-> button-origin x) (-> triangle-offset x)) (+ (-> button-origin y) (-> triangle-offset y)) (font-color green) (font-flags shadow kerning large)) )
+        (draw-string-xy "T" arg0 (+ (-> button-origin x) (-> triangle-offset x)) (+ (-> button-origin y) (-> triangle-offset y)) (font-color green) (font-flags shadow kerning large)) )
     (when (cpad-hold? 0 circle)
-        (draw-string-xy (lookup-text! *common-text* (text-id pad-circle) #f) arg0 (+ (-> button-origin x) (-> circle-offset x)) (+ (-> button-origin y) (-> circle-offset y)) (font-color green) (font-flags shadow kerning large)) )
+        (draw-string-xy "O" arg0 (+ (-> button-origin x) (-> circle-offset x)) (+ (-> button-origin y) (-> circle-offset y)) (font-color green) (font-flags shadow kerning large)) )
     (when (cpad-hold? 0 x)
-        (draw-string-xy (lookup-text! *common-text* (text-id pad-x) #f) arg0 (+ (-> button-origin x) (-> x-offset x)) (+ (-> button-origin y) (-> x-offset y)) (font-color green) (font-flags shadow kerning large)) )
+        (draw-string-xy "X" arg0 (+ (-> button-origin x) (-> x-offset x)) (+ (-> button-origin y) (-> x-offset y)) (font-color green) (font-flags shadow kerning large)) )
     (when (cpad-hold? 0 square)
-        (draw-string-xy (lookup-text! *common-text* (text-id pad-square) #f) arg0 (+ (-> button-origin x) (-> square-offset x)) (+ (-> button-origin y) (-> square-offset y)) (font-color green) (font-flags shadow kerning large)) )
+        (draw-string-xy "S" arg0 (+ (-> button-origin x) (-> square-offset x)) (+ (-> button-origin y) (-> square-offset y)) (font-color green) (font-flags shadow kerning large)) )
 )
 
 ;

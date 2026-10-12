@@ -82,7 +82,7 @@
 ;; Remote Target Management
 ;;;;;;;;;;;;;;;;;;;;;;;;;;
 
-(defun get-target ((idx int))
+(defun mp-get-target ((idx int))
   (if (= (-> *multiplayer-info* player_num) -1)
     (if (= idx 0)
       *target*
@@ -98,7 +98,7 @@
     )
   )
 
-(defun get-interactive-target ((idx int))
+(defun mp-get-interactive-target ((idx int))
   (if (= (-> *multiplayer-info* player_num) -1)
     (if (= idx 0)
       *target*
@@ -118,13 +118,23 @@
 ;; Interaction Data Cleanup
 ;;;;;;;;;;;;;;;;;;;;;;;;;;
 
+(defun mp-copy-string! ((dst string) (src string))
+  "Bounded copy into one of the fixed INTERACTION_STRING_LEN strings (they're shared with the C++ socket code)."
+  (if src
+    (copyn-string<-charp dst (-> src data) (min (length src) (+ INTERACTION_STRING_LEN -1)))
+    (clear dst)
+    )
+  dst
+  )
+
 (defun clean-up-interaction-data ((target remote-player-info))
+  ;; clear in place: allocating fresh strings here would leak global heap on every pickup
   (set! (-> target inter_type) (interaction-type none))
   (set! (-> target inter_amount) 0.0)
   (set! (-> target inter_status) 0.0)
-  (set! (-> target inter_name) (new 'global 'string INTERACTION_STRING_LEN (the-as string #f)))
-  (set! (-> target inter_parent) (new 'global 'string INTERACTION_STRING_LEN (the-as string #f)))
-  (set! (-> target inter_level) (new 'global 'string INTERACTION_STRING_LEN (the-as string #f)))
+  (clear (-> target inter_name))
+  (clear (-> target inter_parent))
+  (clear (-> target inter_level))
   (set! (-> target inter_cleanup) 0)
   (none)
   )

@@ -58,6 +58,7 @@
   (health)
   (boss-phase)
   (taunt)
+  (enemy-hit)      ;; jak2 co-op: guest hit a host-driven enemy (inter_name = aid, inter_amount = damage)
   )
 
 (defenum crate-type
@@ -325,4 +326,49 @@
   (:methods
     (new (symbol type) _type_)
     )
+  )
+
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Jak 2 co-op: host save join + host-authoritative enemies
+;; layout must match CoopEnemy / CoopInfo in game/kernel/common/kernel_types.h
+;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+;; MAX_COOP_ENEMIES is in kernel-defs.gc
+
+(defenum coop-role
+  :type int32
+  (none)
+  (host)
+  (guest)
+  )
+
+(deftype coop-enemy (structure)
+  ((aid    uint32)
+   (x      float)
+   (y      float)
+   (z      float)
+   (qx     float)
+   (qy     float)
+   (qz     float)
+   (qw     float)
+   (anim   int32)
+   (frame  float)
+   (hp     int32)
+   (flags  int32)
+   )
+  )
+
+(deftype coop-info (structure)
+  ((role             coop-role)
+   (save_requested   int32)
+   (save_incoming    int32)
+   (enemy_out_count  int32)
+   (enemy_in_count   int32)
+   (enemy_in_seq     int32)
+   (alert_out        int32) ;; host: city alert level, -1 = not in the city
+   (alert_in         int32) ;; guest: host's city alert level
+   (enemy_out        coop-enemy MAX_COOP_ENEMIES :inline)
+   (enemy_in         coop-enemy MAX_COOP_ENEMIES :inline)
+   )
   )

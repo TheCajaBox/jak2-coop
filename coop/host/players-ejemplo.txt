@@ -1,0 +1,9 @@
+# Un jugador por linea / One player per line:   Nombre@direccion:8111
+# "#0" al final = el juego de ESTE PC (primer mando) / "#0" = the game on THIS PC (first controller).
+# Misma casa / same house: 192.168.x.x  (NETWORK-SETUP.bat)
+# Otra casa / other house: 100.x.x.x    (Tailscale)
+# Quita el "#" del principio de una linea para activarla / Remove the leading "#" to enable a line.
+
+Host@127.0.0.1:8111#0
+# Player2@192.168.1.XX:8111
+# Player3@100.X.X.X:8111

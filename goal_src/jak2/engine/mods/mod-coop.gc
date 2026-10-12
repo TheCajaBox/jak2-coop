@@ -1,0 +1,943 @@
+;;-*-Lisp-*-
+(in-package goal)
+
+;; name: mod-coop.gc
+;; name in dgo: mod-coop
+;; dgos: GAME
+
+;; Jak 2 co-op, phase 3:
+;;  - Joining the host's save: when a guest connects, the relay asks the host's game for its save
+;;    (made in memory, never written to disk) and the guest's game loads it. The guest's autosave
+;;    is blocked while joined so their own save slot isn't overwritten.
+;;  - Host-authoritative enemies: the host sends the state of the placed enemies near the players.
+;;    On the guest, those enemies go into the coop-puppet state: no AI, they copy the host's
+;;    position/rotation/animation. Guest hits are forwarded to the host, which applies them;
+;;    deaths come back through the existing enemy-death sync (mod-remote-player).
+
+(define *coop-info* (new 'global 'coop-info))
+(define *coop-save-buffer* (the-as game-save #f))
+(define *coop-joined?* #f)
+(define *coop-enemy-frame* 0)
+
+(defconstant COOP_ENEMY_RANGE 327680.0) ;; host only sends enemies this close to a player
+(defconstant COOP_PUPPET_TIMEOUT 300) ;; guest gives an enemy back its own AI after this without updates
+
+(defun coop-init ()
+  "Called from init-multiplayer, before the socket handshake (the relay sends our role right after)."
+  (set! (-> *coop-info* role) (coop-role none))
+  (set! (-> *coop-info* save_requested) 0)
+  (set! (-> *coop-info* save_incoming) 0)
+  (set! (-> *coop-info* enemy_out_count) 0)
+  (set! (-> *coop-info* enemy_in_count) 0)
+  (set! (-> *coop-info* enemy_in_seq) 0)
+  (set! (-> *coop-info* alert_out) -1)
+  (set! (-> *coop-info* alert_in) -1)
+  (pc-coop-connect *coop-info*)
+  (none)
+  )
+
+(defun coop-host? ()
+  (= (-> *coop-info* role) (coop-role host))
+  )
+
+(defun coop-guest? ()
+  (= (-> *coop-info* role) (coop-role guest))
+  )
+
+(defun coop-idle? ()
+  "Safe moment to load a save / change things: in game, not loading a level, no cutscene."
+  (and *target*
+       (= (-> *level* loading-level) (-> *level* default-level))
+       (not (movie?))
+       ;; not on the title screen: a title "save" is empty, and a guest should load a real game first
+       (let ((lev (level-get-target-inside *level*)))
+         (and lev (!= (-> lev name) 'title))
+         )
+       (= (-> *game-info* mode) 'play)
+       )
+  )
+
+(defun coop-block-autosave? ()
+  "Called from auto-save-user: a guest playing the host's save mustn't autosave over their own slot."
+  (and (coop-guest?) *coop-joined?*)
+  )
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Joining the host's save
+;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(defun coop-save-buffer ()
+  (if (not *coop-save-buffer*)
+    (set! *coop-save-buffer* (new 'global 'game-save #x20000))
+    )
+  *coop-save-buffer*
+  )
+
+(defun coop-save-used-size ((save game-save))
+  "Bytes from the start of the save object to the end of its used tags (what load-game reads)."
+  (+ 16 (- (the-as int (&-> save tag 0 user-int8 (-> save length))) (the-as int save)))
+  )
+
+(defun coop-host-send-save ()
+  (let ((save (coop-save-buffer)))
+    (save-game *game-info* save "save")
+    (format 0 "Co-op: sending host save (~D bytes)~%" (coop-save-used-size save))
+    (pc-coop-send-save (the-as pointer save) (coop-save-used-size save))
+    )
+  (none)
+  )
+
+(defun coop-guest-load-save ()
+  (let* ((save (coop-save-buffer))
+         (n (pc-coop-take-save (the-as pointer save) (+ #x20000 -32))))
+    (cond
+      ((and (> n 0) (= (-> save version) 3))
+       (format 0 "Co-op: joining the host's save (~D bytes)~%" n)
+       (set! (-> save allocated-length) (+ #x20000 -32))
+       (set! *coop-joined?* #t)
+       (set! *tracker-initialized* #f) ;; a loaded save isn't new progress
+       (set! (-> *game-info* mode) 'play)
+       (initialize! *game-info* 'game save (the-as string #f))
+       (set-master-mode 'game)
+       )
+      (else
+        (format 0 "Co-op: received an invalid host save (~D bytes), ignored~%" n)
+        )
+      )
+    )
+  (none)
+  )
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Host: send enemies
+;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(defun coop-anim-index ((pd process-drawable))
+  "Index of pd's current root animation in its own art group, -1 if none."
+  (let ((ch (-> pd skel root-channel 0))
+        (ag (-> pd draw art-group)))
+    (when (and ch ag (-> ch frame-group))
+      (dotimes (i (-> ag length))
+        (if (= (-> ag data i) (-> ch frame-group))
+          (return i)
+          )
+        )
+      )
+    -1
+    )
+  )
+
+(defun coop-near-a-player? ((pos vector))
+  (if (and *target* (< (vector-vector-distance pos (-> *target* control trans)) COOP_ENEMY_RANGE))
+    (return #t)
+    )
+  (dotimes (idx MAX_MULTIPLAYER_COUNT)
+    (when (and (!= idx (-> *multiplayer-info* player_num)) (is-interactive? idx))
+      (let ((p (-> *multiplayer-info* players idx))
+            (v (new 'stack-no-clear 'vector)))
+        (set-vector! v (-> p trans_x) (-> p trans_y) (-> p trans_z) 1.0)
+        (if (< (vector-vector-distance pos v) COOP_ENEMY_RANGE)
+          (return #t)
+          )
+        )
+      )
+    )
+  #f
+  )
+
+(defconstant COOP_OWNER_MARGIN 32768.0) ;; 8 m hysteresis, ties go to the host
+
+(defun coop-min-remote-dist ((pos vector))
+  (let ((best 999999999.0)
+        (v (new 'stack-no-clear 'vector)))
+    (dotimes (idx MAX_MULTIPLAYER_COUNT)
+      (when (and (!= idx (-> *multiplayer-info* player_num)) (is-interactive? idx))
+        (let ((p (-> *multiplayer-info* players idx)))
+          (set-vector! v (-> p trans_x) (-> p trans_y) (-> p trans_z) 1.0)
+          (set! best (fmin best (vector-vector-distance pos v)))
+          )
+        )
+      )
+    best
+    )
+  )
+
+(defun coop-local-owns? ((pos vector))
+  "Each shared enemy runs its AI in the game of the closest player (so it attacks that player) and is a
+   copy everywhere else. Within 8 m the host keeps it, so control doesn't flip back and forth."
+  (let ((mine (if *target* (vector-vector-distance pos (-> *target* control trans)) 999999999.0))
+        (theirs (coop-min-remote-dist pos)))
+    (if (coop-host?)
+      (<= mine (+ theirs COOP_OWNER_MARGIN))
+      (< (+ mine COOP_OWNER_MARGIN) theirs)
+      )
+    )
+  )
+
+(defun coop-puppet? ((proc process))
+  (and (-> proc state) (= (-> proc state name) 'coop-puppet))
+  )
+
+(define *coop-collect-idx* 0)
+
+(defun coop-guard? ((proc process))
+  (and (type? proc enemy) (mp-type-is? (-> proc type) 'crimson-guard))
+  )
+
+(defun coop-host-collect-guard ((obj object))
+  "iterate-process-tree callback: append live traffic guards near a player to enemy_out (aid = pid, flags 1)."
+  (let ((proc (the-as process obj)))
+    (when (and (< *coop-collect-idx* MAX_COOP_ENEMIES) (type? proc process) (coop-guard? proc))
+      (let ((e (the-as enemy proc)))
+        (when (and (> (-> e hit-points) 0) (coop-near-a-player? (-> e root trans)))
+          (let ((out (-> *coop-info* enemy_out *coop-collect-idx*)))
+            (set! (-> out aid) (the-as uint (-> e pid)))
+            (set! (-> out x) (-> e root trans x))
+            (set! (-> out y) (-> e root trans y))
+            (set! (-> out z) (-> e root trans z))
+            (set! (-> out qx) (-> e root quat x))
+            (set! (-> out qy) (-> e root quat y))
+            (set! (-> out qz) (-> e root quat z))
+            (set! (-> out qw) (-> e root quat w))
+            (set! (-> out anim) (coop-anim-index e))
+            (set! (-> out frame) (if (-> e skel root-channel 0) (-> e skel root-channel 0 frame-num) 0.0))
+            (set! (-> out hp) (-> e hit-points))
+            (set! (-> out flags) 1)
+            )
+          (+! *coop-collect-idx* 1)
+          )
+        )
+      )
+    )
+  #f
+  )
+
+(defun coop-host-collect-enemies ()
+  "Fill enemy_out with the placed, alive, shared enemies we drive (closest to us) near any player.
+   Every player sends its own; C++ sends and clears it."
+  (let ((count 0))
+    (dotimes (li (-> *level* length))
+      (let ((lev (-> *level* level li)))
+        (when (= (-> lev status) 'active)
+          (let ((links (-> lev entity)))
+            (when (nonzero? links)
+              (dotimes (i (-> links length))
+                (let ((proc (-> links data i process)))
+                  (when (and proc (< count MAX_COOP_ENEMIES) (type? proc enemy))
+                    (let ((e (the-as enemy proc)))
+                      (when (and (> (-> e hit-points) 0) (mp-coop-enemy? e) (not (coop-puppet? e))
+                                 (coop-near-a-player? (-> e root trans)) (coop-local-owns? (-> e root trans)))
+                        (let ((out (-> *coop-info* enemy_out count)))
+                          (set! (-> out aid) (the-as uint (-> links data i perm aid)))
+                          (set! (-> out x) (-> e root trans x))
+                          (set! (-> out y) (-> e root trans y))
+                          (set! (-> out z) (-> e root trans z))
+                          (set! (-> out qx) (-> e root quat x))
+                          (set! (-> out qy) (-> e root quat y))
+                          (set! (-> out qz) (-> e root quat z))
+                          (set! (-> out qw) (-> e root quat w))
+                          (set! (-> out anim) (coop-anim-index e))
+                          (set! (-> out frame) (if (-> e skel root-channel 0) (-> e skel root-channel 0 frame-num) 0.0))
+                          (set! (-> out hp) (-> e hit-points))
+                          (set! (-> out flags) 0)
+                          )
+                        (+! count 1)
+                        )
+                      )
+                    )
+                  )
+                )
+              )
+            )
+          )
+        )
+      )
+    ;; city guards come from the traffic system (no entity): find them in the process tree
+    (set! *coop-collect-idx* count)
+    (if (coop-host?)
+      (iterate-process-tree *active-pool* coop-host-collect-guard *kernel-context*)
+      )
+    (set! (-> *coop-info* enemy_out_count) *coop-collect-idx*)
+    )
+  (none)
+  )
+
+(define *coop-find-pid* 0)
+(define *coop-found-proc* (the-as process #f))
+
+(defun coop-find-pid-callback ((obj object))
+  (let ((proc (the-as process obj)))
+    (if (and (type? proc process) (= (-> proc pid) *coop-find-pid*))
+      (set! *coop-found-proc* proc)
+      )
+    )
+  #f
+  )
+
+(defun coop-damage-enemy ((e enemy) (damage int))
+  "Apply a guest's hit as a real attack coming from our Jak: the enemy flinches/knocks back and loses
+   hit points through its own logic (the guest sees it, their copy mirrors our enemy)."
+  (when (and (> (-> e hit-points) 0) *target* (not (coop-puppet? e)))
+    (with-pp
+      (protect (pp)
+        (set! pp *target*)
+        (send-event e 'attack #f (static-attack-info ((id (new-attack-id)) (mode 'generic) (damage (the float damage)))))
+        )
+      )
+    )
+  (none)
+  )
+
+(defun coop-host-apply-hit ((aid-str string) (damage int))
+  "A guest hit one of our enemies: take the hit points, kill it at 0 (its death syncs back to everyone).
+   Placed enemies are named by actor id, traffic guards by g<pid>."
+  (cond
+    ((= (-> aid-str data 0) #x67) ;; 'g' = traffic guard, the rest is its pid
+      (let ((pid 0)
+            (i 1))
+        (while (and (< i (length aid-str)) (>= (-> aid-str data i) #x30) (<= (-> aid-str data i) #x39))
+          (set! pid (+ (* pid 10) (- (-> aid-str data i) #x30)))
+          (+! i 1)
+          )
+        (set! *coop-find-pid* pid)
+        )
+      (set! *coop-found-proc* #f)
+      (iterate-process-tree *active-pool* coop-find-pid-callback *kernel-context*)
+      (if (and *coop-found-proc* (coop-guard? *coop-found-proc*))
+        (coop-damage-enemy (the-as enemy *coop-found-proc*) damage)
+        )
+     )
+    (else
+    (let ((ent (entity-by-aid (the-as uint (string->int aid-str)))))
+      (when ent
+        (let ((proc (-> ent extra process)))
+          (when (and proc (type? proc enemy) (> (-> (the-as enemy proc) hit-points) 0))
+            (coop-damage-enemy (the-as enemy proc) damage)
+            )
+          )
+        )
+      )
+      )
+    )
+  (none)
+  )
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Guest: puppet enemies
+;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(defun coop-find-enemy-in ((aid uint))
+  (dotimes (i (min (-> *coop-info* enemy_in_count) MAX_COOP_ENEMIES))
+    (if (and (= (-> *coop-info* enemy_in i aid) aid) (zero? (-> *coop-info* enemy_in i flags)))
+      (return (-> *coop-info* enemy_in i))
+      )
+    )
+  (the-as coop-enemy #f)
+  )
+
+(define *coop-aid-str* (new 'global 'string 16 (the-as string #f)))
+
+(defun coop-forward-hit ((e enemy))
+  (when (-> e entity)
+    (let ((aid-str *coop-aid-str*)) ;; copied by add-interaction-to-buffer, so one global is fine
+      (format (clear aid-str) "~D" (-> e entity aid))
+      (add-interaction-to-buffer (interaction-type enemy-hit) 1.0 0.0 aid-str (get-current-level-name) "entity-pool")
+      )
+    )
+  (none)
+  )
+
+;; the last attack we forwarded per enemy, so one swing isn't sent every frame
+(define *coop-last-attack-id* (the-as uint 0))
+(define *coop-last-attack-proc* (the-as process #f))
+
+(defstate coop-puppet (enemy)
+  :event (behavior ((proc process) (argc int) (message symbol) (block event-message-block))
+    (case message
+      (('attack)
+       ;; forward each distinct attack once; the host decides the damage and the death
+       (let ((info (the-as attack-info (-> block param 1))))
+         (when (or (!= self *coop-last-attack-proc*) (not info) (!= (-> info id) *coop-last-attack-id*))
+           (set! *coop-last-attack-proc* self)
+           (set! *coop-last-attack-id* (if info (-> info id) (the-as uint 0)))
+           (coop-forward-hit self)
+           )
+         )
+       #t
+       )
+      (('instant-death)
+       (logior! (-> self enemy-flags) (enemy-flag spawn-gem)) ;; the host's copy drops the gem
+       (kill-prefer-falling self)
+       )
+      )
+    )
+  :code (behavior ()
+    (let ((last-update (current-time)))
+      (loop
+        (let ((d (coop-find-enemy-in (-> self entity aid))))
+          (cond
+            ((coop-local-owns? (-> self root trans))
+             ;; we're the closest player now: this enemy runs its own AI here (and attacks us)
+             (go-virtual idle)
+             )
+            (d
+             (set! last-update (current-time))
+             (if (> (-> d hp) 0)
+               (set! (-> self hit-points) (-> d hp))
+               )
+             (set-vector! (-> self root trans) (-> d x) (-> d y) (-> d z) 1.0)
+             (set! (-> self root quat x) (-> d qx))
+             (set! (-> self root quat y) (-> d qy))
+             (set! (-> self root quat z) (-> d qz))
+             (set! (-> self root quat w) (-> d qw))
+             (let ((ag (-> self draw art-group)))
+               (when (and (>= (-> d anim) 0) (< (-> d anim) (-> ag length)) (type? (-> ag data (-> d anim)) art-joint-anim))
+                 (ja :group! (the-as art-joint-anim (-> ag data (-> d anim)))
+                     :num! (identity (fmax 0.0 (fmin (-> d frame) (the float (ja-num-frames 0))))))
+                 )
+               )
+             )
+            ((time-elapsed? last-update COOP_PUPPET_TIMEOUT)
+             ;; the host stopped driving it (far away / level unloaded on their side): back to its own AI
+             (go-virtual idle)
+             )
+            )
+          )
+        (suspend)
+        )
+      )
+    )
+  :post (behavior ()
+    (update-transforms (-> self root))
+    (ja-post)
+    )
+  )
+
+(define *coop-dead-aids* (new 'global 'boxed-array uint32 16))
+(define *coop-dead-times* (new 'global 'boxed-array time-frame 16))
+(dotimes (i 16)
+  (set! (-> *coop-dead-aids* i) (the-as uint 0))
+  (set! (-> *coop-dead-times* i) (the-as time-frame 0))
+  )
+(define *coop-dead-next* 0)
+
+(defun coop-host-report-dead ((ent entity-actor) (aid uint))
+  "Someone has an enemy alive that's dead in the host's world (they died and their area respawned):
+   tell them it's dead. At most every 2 s per enemy."
+  (dotimes (i 16)
+    (if (and (= (-> *coop-dead-aids* i) aid) (not (time-elapsed? (-> *coop-dead-times* i) (seconds 2))))
+      (return #f)
+      )
+    )
+  (set! (-> *coop-dead-aids* *coop-dead-next*) aid)
+  (set! (-> *coop-dead-times* *coop-dead-next*) (current-time))
+  (set! *coop-dead-next* (mod (+ *coop-dead-next* 1) 16))
+  (add-interaction-to-buffer (interaction-type enemy-death) 1.0 0.0 (res-lump-struct ent 'name string)
+                             (get-current-level-name) "entity-pool")
+  #t
+  )
+
+(defun coop-guest-drive-enemies ()
+  "Put enemies the host is driving into coop-puppet (they stay there until updates stop).
+   If the host has an enemy alive that's dead here (the host died and its area respawned), revive ours."
+  (dotimes (i (min (-> *coop-info* enemy_in_count) MAX_COOP_ENEMIES))
+    (let ((ent (if (zero? (-> *coop-info* enemy_in i flags)) (entity-by-aid (-> *coop-info* enemy_in i aid)))))
+      (when (and ent (type? ent entity-actor) (not (-> ent extra process)) (> (-> *coop-info* enemy_in i hp) 0))
+        (cond
+          ((coop-guest?)
+           ;; the host has it alive (its area respawned when the host died): bring ours back
+           (logclear! (-> ent extra perm status) (entity-perm-status bit-0 dead))
+           (birth! (the-as entity-actor ent))
+           )
+          ((logtest? (-> ent extra perm status) (entity-perm-status dead))
+           ;; a guest has it alive but it's dead here: respawns only happen on the host
+           (coop-host-report-dead (the-as entity-actor ent) (-> *coop-info* enemy_in i aid))
+           )
+          )
+        )
+      (when ent
+        (let ((proc (-> ent extra process)))
+          (when (and proc (type? proc enemy) (mp-coop-enemy? (the-as enemy proc))
+                     (> (-> (the-as enemy proc) hit-points) 0)
+                     (not (coop-puppet? proc))
+                     (not (coop-local-owns? (-> (the-as enemy proc) root trans))))
+            (go-process proc coop-puppet)
+            )
+          )
+        )
+      )
+    )
+  (none)
+  )
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Guest: the host's world decides which enemies exist
+;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+;; Respawns only happen on the host. If the guest dies, its area reloads and enemies the host already
+;; killed come back on the guest only. Any shared enemy close to the host that the host isn't reporting
+;; (for a full second, so a freshly spawned one isn't removed by mistake) is dead in the host's world:
+;; remove it here too, silently (no death sync, no gem).
+
+(defconstant COOP_CULL_RANGE 245760.0) ;; 60 m from the host, inside the 80 m the host reports
+(defconstant COOP_CULL_DELAY 300) ;; 1 second
+
+(define *coop-cull-aids* (new 'global 'boxed-array uint32 MAX_COOP_ENEMIES))
+(define *coop-cull-times* (new 'global 'boxed-array time-frame MAX_COOP_ENEMIES))
+(dotimes (i MAX_COOP_ENEMIES)
+  (set! (-> *coop-cull-aids* i) (the-as uint 0))
+  (set! (-> *coop-cull-times* i) (the-as time-frame 0))
+  )
+(define *coop-last-seq* 0)
+(define *coop-last-seq-time* (the-as time-frame 0))
+
+(defun coop-host-slot-pos ((out vector))
+  "The host is always the relay's first player, which every guest gets in slot 1."
+  (let ((p (-> *multiplayer-info* players 1)))
+    (if (not (is-interactive? 1))
+      (return #f)
+      )
+    (set-vector! out (-> p trans_x) (-> p trans_y) (-> p trans_z) 1.0)
+    #t
+    )
+  )
+
+(defun coop-cull-missing-since ((aid uint) (missing symbol))
+  "Track how long an enemy has been missing from the host's reports. Returns the time it went missing (0 = not missing)."
+  (let ((free -1))
+    (dotimes (i MAX_COOP_ENEMIES)
+      (cond
+        ((= (-> *coop-cull-aids* i) aid)
+         (when (not missing)
+           (set! (-> *coop-cull-aids* i) (the-as uint 0))
+           (return (the-as time-frame 0))
+           )
+         (return (-> *coop-cull-times* i))
+         )
+        ((and (< free 0) (zero? (-> *coop-cull-aids* i)))
+         (set! free i)
+         )
+        )
+      )
+    (when (and missing (>= free 0))
+      (set! (-> *coop-cull-aids* free) aid)
+      (set! (-> *coop-cull-times* free) (current-time))
+      (return (current-time))
+      )
+    (the-as time-frame 0)
+    )
+  )
+
+(defun coop-guest-cull-enemies ()
+  ;; only while the host is actually sending (fresh data)
+  (when (!= (-> *coop-info* enemy_in_seq) *coop-last-seq*)
+    (set! *coop-last-seq* (-> *coop-info* enemy_in_seq))
+    (set! *coop-last-seq-time* (current-time))
+    )
+  (let ((host-pos (new 'stack-no-clear 'vector)))
+    (when (and (not (time-elapsed? *coop-last-seq-time* (seconds 0.5))) (coop-host-slot-pos host-pos))
+      (dotimes (li (-> *level* length))
+        (let ((lev (-> *level* level li)))
+          (when (= (-> lev status) 'active)
+            (let ((links (-> lev entity)))
+              (when (nonzero? links)
+                (dotimes (i (-> links length))
+                  (let ((proc (-> links data i process)))
+                    (when (and proc (type? proc enemy))
+                      (let ((e (the-as enemy proc))
+                            (aid (the-as uint (-> links data i perm aid))))
+                        (when (and (> (-> e hit-points) 0)
+                                   (mp-coop-enemy? e)
+                                   (not (coop-local-owns? (-> e root trans)))
+                                   (< (vector-vector-distance (-> e root trans) host-pos) COOP_CULL_RANGE))
+                          (let* ((missing (not (coop-find-enemy-in aid)))
+                                 (since (coop-cull-missing-since aid missing)))
+                            (when (and missing (nonzero? since) (time-elapsed? since COOP_CULL_DELAY))
+                              (coop-cull-missing-since aid #f)
+                              (process-entity-status! e (entity-perm-status dead) #t)
+                              (deactivate e)
+                              )
+                            )
+                          )
+                        )
+                      )
+                    )
+                  )
+                )
+              )
+            )
+          )
+        )
+      )
+    )
+  (none)
+  )
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Copies ("ghosts") of the host's city guards
+;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+;; Guards (enemy_in flags 1, aid = pid): city guards come from each game's own traffic system, which only
+;; spawns them around its own player. When the guest is close to the host (< 40 m) it turns its own guards
+;; off and draws copies of the host's (hits are forwarded to the host); further than 60 m it gets its own
+;; guards back (with the shared alert level they hunt the guest). Copies don't attack.
+
+
+(defconstant COOP_GHOST_GUARD 1)
+(defconstant COOP_GUARDS_NEAR 163840.0) ;; 40 m: switch to copies of the host's guards
+(defconstant COOP_GUARDS_FAR 245760.0)  ;; 60 m: back to our own guards
+
+(define *coop-guards-suppressed?* #f)
+
+(deftype coop-ghost (process-drawable)
+  ((root         collide-shape :override)
+   (ghost-pid    int32)
+   (kind         int32)
+   (last-seen    time-frame)
+   (last-attack  uint32)
+   (minimap      connection-minimap)
+   )
+  (:state-methods
+    idle
+    )
+  )
+
+(defun coop-ghost-cleanup ((this coop-ghost))
+  "Take the copy's icon off the minimap (same as a real guard going inactive)."
+  (when (-> this minimap)
+    (logior! (-> this minimap flags) (minimap-flag fade-out))
+    (set! (-> this minimap) #f)
+    )
+  (none)
+  )
+
+(define *coop-ghost-str* (new 'global 'string 16 (the-as string #f)))
+
+(defun coop-find-ghost-in ((pid int) (kind int))
+  (dotimes (i (min (-> *coop-info* enemy_in_count) MAX_COOP_ENEMIES))
+    (let ((d (-> *coop-info* enemy_in i)))
+      (if (and (= (-> d flags) kind) (= (the-as int (-> d aid)) pid))
+        (return d)
+        )
+      )
+    )
+  (the-as coop-enemy #f)
+  )
+
+(defstate idle (coop-ghost)
+  :virtual #t
+  :event (behavior ((proc process) (argc int) (message symbol) (block event-message-block))
+    (case message
+      (('attack)
+       (when (= (-> self kind) COOP_GHOST_GUARD)
+         (let ((info (the-as attack-info (-> block param 1))))
+           (when (or (not info) (!= (-> info id) (-> self last-attack)))
+             (set! (-> self last-attack) (if info (-> info id) (the-as uint 0)))
+             (format (clear *coop-ghost-str*) "g~D" (-> self ghost-pid))
+             (add-interaction-to-buffer (interaction-type enemy-hit) 1.0 0.0 *coop-ghost-str* (get-current-level-name) "entity-pool")
+             )
+           )
+         #t
+         )
+       )
+      )
+    )
+  :code (behavior ()
+    (loop
+      (let ((d (coop-find-ghost-in (-> self ghost-pid) (-> self kind))))
+        (cond
+          ((and (= (-> self kind) COOP_GHOST_GUARD) (not *coop-guards-suppressed?*))
+           ;; we're using our own guards again
+           (coop-ghost-cleanup self)
+           (deactivate self)
+           )
+          (d
+           (set-time! (-> self last-seen))
+           (set-vector! (-> self root trans) (-> d x) (-> d y) (-> d z) 1.0)
+           (set! (-> self root quat x) (-> d qx))
+           (set! (-> self root quat y) (-> d qy))
+           (set! (-> self root quat z) (-> d qz))
+           (set! (-> self root quat w) (-> d qw))
+           (when (= (-> self kind) COOP_GHOST_GUARD)
+             (let ((ag (-> self draw art-group)))
+               (when (and (>= (-> d anim) 0) (< (-> d anim) (-> ag length)) (type? (-> ag data (-> d anim)) art-joint-anim))
+                 (ja :group! (the-as art-joint-anim (-> ag data (-> d anim)))
+                     :num! (identity (fmax 0.0 (fmin (-> d frame) (the float (ja-num-frames 0))))))
+                 )
+               )
+             )
+           )
+          ((time-elapsed? (-> self last-seen) (seconds 0.5))
+           ;; the original died or went out of range
+           (coop-ghost-cleanup self)
+           (deactivate self)
+           )
+          )
+        )
+      (suspend)
+      )
+    )
+  :exit (behavior ()
+    (coop-ghost-cleanup self)
+    )
+  :post (behavior ()
+    (update-transforms (-> self root))
+    (ja-post)
+    )
+  )
+
+(define *coop-art-found* #f)
+
+(defbehavior coop-ghost-init-by-other coop-ghost ((pid int) (kind int) (skel string))
+  (let ((sg (art-group-get-by-name *level* skel (the-as (pointer uint32) #f))))
+    (if (not sg)
+      (deactivate self) ;; that model isn't loaded in our game right now
+      )
+    (let ((cshape (new 'process 'collide-shape self (collide-list-enum hit-by-player))))
+      (let ((prim (new 'process 'collide-shape-prim-sphere cshape (the-as uint 0))))
+        (cond
+          ((= kind COOP_GHOST_GUARD)
+           ;; hittable like a real guard
+           (set! (-> prim prim-core collide-as) (collide-spec civilian))
+           (set! (-> prim prim-core collide-with) (collide-spec jak player-list))
+           (set! (-> prim prim-core action) (collide-action solid))
+           )
+          (else
+            (set! (-> prim prim-core collide-as) (collide-spec))
+            (set! (-> prim prim-core collide-with) (collide-spec))
+            )
+          )
+        (set-vector! (-> prim local-sphere) 0.0 6144.0 0.0 6144.0)
+        (set! (-> cshape total-prims) (the-as uint 1))
+        (set! (-> cshape root-prim) prim)
+        )
+      (set! (-> cshape backup-collide-as) (-> cshape root-prim prim-core collide-as))
+      (set! (-> cshape backup-collide-with) (-> cshape root-prim prim-core collide-with))
+      (set! (-> self root) cshape)
+      )
+    (set! (-> self ghost-pid) pid)
+    (set! (-> self kind) kind)
+    (set! (-> self minimap) #f)
+    (set! (-> self last-attack) (the-as uint 0))
+    (set-time! (-> self last-seen))
+    (let ((d (coop-find-ghost-in pid kind)))
+      (if d
+        (set-vector! (-> self root trans) (-> d x) (-> d y) (-> d z) 1.0)
+        )
+      )
+    ;; initialize-skeleton takes the art group from the process's own level, and a copy spawned from the
+    ;; frame loop belongs to no level. Use the loaded level whose art-group list has this model's art.
+    (set! *coop-art-found* #f)
+    (let ((name (-> (the-as skeleton-group sg) art-group-name)))
+      (dotimes (i (-> *level* length))
+        (let ((lev (-> *level* level i)))
+          (when (and (!= (-> lev status) 'inactive) (nonzero? (-> lev art-group)))
+            (let ((dir (-> lev art-group)))
+              (dotimes (j (-> dir string-array length))
+                (when (string= (-> dir string-array j) name)
+                  (set! (-> self level) lev)
+                  (set! *coop-art-found* #t)
+                  (set! j (-> dir string-array length))
+                  )
+                )
+              )
+            )
+          )
+        )
+      )
+    (if (not *coop-art-found*)
+      (deactivate self) ;; its art isn't loaded in any level here, don't leave an invisible process around
+      )
+    (initialize-skeleton self (the-as skeleton-group sg) (the-as pair 0))
+    ;; a process-drawable with no active animation channel is never drawn (ja-post sets no-draw-temp):
+    ;; open one channel with the model's default animation (or its first one) as the starting pose
+    (ja-channel-set! 1)
+    (let* ((ag (-> self draw art-group))
+           (def (-> (the-as skeleton-group sg) janim))
+           (anim (if (and (>= def 0) (< def (-> ag length)) (type? (-> ag data def) art-joint-anim))
+                     (-> ag data def)
+                     (the-as art-element #f))))
+      (when (not anim)
+        (dotimes (i (-> ag length))
+          (when (type? (-> ag data i) art-joint-anim)
+            (set! anim (-> ag data i))
+            (set! i (-> ag length))
+            )
+          )
+        )
+      (if anim
+        (ja :group! (the-as art-joint-anim anim) :num! min)
+        )
+      )
+    ;; guard copies show on the minimap like real guards (icon class 32)
+    (if (= kind COOP_GHOST_GUARD)
+      (set! (-> self minimap) (add-icon! *minimap* self (the-as uint 32) (the-as int #f) (the-as vector #t) 0))
+      )
+    )
+  (go-virtual idle)
+  (none)
+  )
+
+(define *coop-ghosts* (new 'global 'boxed-array handle MAX_COOP_ENEMIES))
+(define *coop-ghost-pids* (new 'global 'boxed-array int32 MAX_COOP_ENEMIES))
+(define *coop-ghost-kinds* (new 'global 'boxed-array int32 MAX_COOP_ENEMIES))
+(dotimes (i MAX_COOP_ENEMIES)
+  (set! (-> *coop-ghosts* i) (the-as handle #f))
+  (set! (-> *coop-ghost-pids* i) -1)
+  (set! (-> *coop-ghost-kinds* i) 0)
+  )
+
+(defun coop-ghost-alive? ((slot int))
+  (and (nonzero? (-> *coop-ghosts* slot)) (handle->process (-> *coop-ghosts* slot)))
+  )
+
+(define *coop-host-city-time* (the-as time-frame 0))
+
+(defun coop-update-ghost-guards-mode ()
+  "Guest: copies of the host's guards when we're close to the host in the city, our own guards otherwise."
+  ;; the host's traffic manager restarts for a moment on every city zone reload (alert -1):
+  ;; only treat the host as gone from the city after 5 s without an alert level
+  (if (>= (-> *coop-info* alert_in) 0)
+    (set-time! *coop-host-city-time*)
+    )
+  (let ((host-pos (new 'stack-no-clear 'vector))
+        (host-in-city (and *traffic-manager* *target*
+                           (or (>= (-> *coop-info* alert_in) 0)
+                               (and (nonzero? *coop-host-city-time*) (not (time-elapsed? *coop-host-city-time* (seconds 5))))))))
+    (let ((dist (if (and host-in-city (coop-host-slot-pos host-pos))
+                    (vector-vector-distance (-> *target* control trans) host-pos)
+                    999999999.0)))
+      (cond
+        ((and (not *coop-guards-suppressed?*) host-in-city (< dist COOP_GUARDS_NEAR))
+         (send-event *traffic-manager* 'set-guard-target-level 0.0)
+         (send-event *traffic-manager* 'deactivate-by-type (traffic-type crimson-guard-0))
+         (send-event *traffic-manager* 'deactivate-by-type (traffic-type crimson-guard-1))
+         (send-event *traffic-manager* 'deactivate-by-type (traffic-type crimson-guard-2))
+         (set! *coop-guards-suppressed?* #t)
+         )
+        ((and *coop-guards-suppressed?* (or (not host-in-city) (> dist COOP_GUARDS_FAR)))
+         ;; back to our own guards (only undoes what we did)
+         (if *traffic-manager*
+           (send-event *traffic-manager* 'set-guard-target-level 1.0)
+           )
+         (set! *coop-guards-suppressed?* #f)
+         )
+        )
+      )
+    )
+  (none)
+  )
+
+(defun coop-spawn-ghosts ()
+  "Spawn a copy for every host guard we don't have one for yet (guest, while using copies)."
+  (dotimes (i (min (-> *coop-info* enemy_in_count) MAX_COOP_ENEMIES))
+    (let* ((d (-> *coop-info* enemy_in i))
+           (kind (-> d flags)))
+      (when (and (= kind COOP_GHOST_GUARD) *coop-guards-suppressed?*)
+        (let ((pid (the-as int (-> d aid)))
+              (found #f)
+              (free -1))
+          (dotimes (slot MAX_COOP_ENEMIES)
+            (cond
+              ((coop-ghost-alive? slot)
+               (if (and (= (-> *coop-ghost-pids* slot) pid) (= (-> *coop-ghost-kinds* slot) kind))
+                 (set! found #t)
+                 )
+               )
+              ((< free 0)
+               (set! free slot)
+               )
+              )
+            )
+          (when (and (not found) (>= free 0))
+            (let ((proc (process-spawn coop-ghost pid kind
+                                       "skel-crimson-guard"
+                                       :name "coop-ghost" :to *entity-pool*)))
+              (when proc
+                (set! (-> *coop-ghosts* free) (ppointer->handle proc))
+                (set! (-> *coop-ghost-pids* free) pid)
+                (set! (-> *coop-ghost-kinds* free) kind)
+                )
+              )
+            )
+          )
+        )
+      )
+    )
+  (none)
+  )
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; City alert (Krimzon Guard)
+;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+;; City guards are spawned by each game's own traffic system (no fixed names), so instead of syncing
+;; them one by one we share the alert level: when the host angers the guards, the guest's city goes
+;; on alert against the guest too.
+(define *coop-alert-frame* 0)
+
+(defun coop-host-update-alert ()
+  (set! (-> *coop-info* alert_out)
+        (if *traffic-manager* (the int (send-event *traffic-manager* 'get-alert-level)) -1))
+  (none)
+  )
+
+(defun coop-guest-update-alert ()
+  (when (and *traffic-manager* *target* (> (-> *coop-info* alert_in) 0))
+    (let ((ours (the int (send-event *traffic-manager* 'get-alert-level))))
+      (if (< ours (-> *coop-info* alert_in))
+        (send-event *traffic-manager* 'increase-alert-level (-> *coop-info* alert_in))
+        )
+      )
+    )
+  (none)
+  )
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Frame update (from runs-every-frame)
+;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(defun coop-update ()
+  (cond
+    ((coop-host?)
+     (when (and (nonzero? (-> *coop-info* save_requested)) (coop-idle?))
+       (set! (-> *coop-info* save_requested) 0)
+       (coop-host-send-save)
+       )
+     ;; enemies at 30 Hz
+     (+! *coop-enemy-frame* 1)
+     (when (and *target* (zero? (logand *coop-enemy-frame* 1)))
+       (coop-host-collect-enemies)
+       )
+     (if (zero? (mod *coop-enemy-frame* 30))
+       (coop-host-update-alert)
+       )
+     (coop-spawn-ghosts)
+     (if *target*
+       (coop-guest-drive-enemies) ;; host also copies the enemies a guest drives
+       )
+     )
+    ((coop-guest?)
+     (if (and (nonzero? (-> *coop-info* save_incoming)) (coop-idle?))
+       (coop-guest-load-save)
+       )
+     (+! *coop-enemy-frame* 1)
+     (when (and *target* (zero? (logand *coop-enemy-frame* 1)))
+       (coop-host-collect-enemies)
+       )
+     (when *target*
+       (coop-guest-drive-enemies)
+       (+! *coop-alert-frame* 1)
+       (if (zero? (mod *coop-alert-frame* 30))
+         (coop-guest-update-alert)
+         )
+       (coop-update-ghost-guards-mode)
+       (coop-spawn-ghosts)
+       (if (zero? (mod *coop-alert-frame* 6))
+         (coop-guest-cull-enemies)
+         )
+       )
+     )
+    )
+  (none)
+  )

@@ -1,0 +1,33 @@
+JAK 2 CO-OP - HOST (anfitrion)
+==============================
+
+El host NO hostea una partida: su PC solo ejecuta el "relay", que se conecta al juego de
+cada uno y reenvia posiciones, misiones, orbes y gemas. Cualquiera puede ser host.
+Cada uno juega su propia partida guardada (ver "Partidas" en LEEME.txt).
+
+Necesitas Node.js instalado: https://nodejs.org
+
+Una sola vez
+------------
+1. Instala el juego como un jugador mas (SETUP.bat en la carpeta de arriba).
+2. Si alguien juega desde OTRA casa: abre HOST-TAILSCALE.bat.
+   Instala Tailscale, inicias sesion (cuenta gratis) y se abre la pagina de usuarios:
+   pulsa "Invite users" y mandale el enlace.
+3. Los demas hacen SETUP.bat + NETWORK-SETUP.bat y te mandan la direccion que les sale.
+4. Edita players.txt (un jugador por linea):
+     Host@127.0.0.1:8111#0       <- tu propio juego, dejalo asi (puedes cambiar el nombre)
+     Player2@192.168.1.XX:8111   <- misma casa: su 192.168.x.x
+     Player3@100.X.X.X:8111      <- otra casa: su IP de Tailscale
+   Quita el "#" del principio de las lineas que uses. Los nombres son los que se ven en el juego.
+
+Cada vez que jugueis
+--------------------
+1. Todos abren PLAY.bat (tu tambien, el de la carpeta de arriba).
+2. Tu abres START-RELAY.bat y dejas esa ventana abierta.
+   Veras "[Nombre] in game" cuando cada uno se conecte,
+   y cada mision / orbe / gema que se comparta.
+
+Notas
+-----
+- Si alguien no aparece, el relay lo reintenta solo cada 2 segundos: no hace falta reiniciarlo.
+- Para probar en un solo PC con dos ventanas y dos mandos, mira el final de HOST-README.txt.

@@ -40,9 +40,9 @@
         (set! (-> *interaction-update-buffer* idx type) type)
         (set! (-> *interaction-update-buffer* idx amount) amount)
         (set! (-> *interaction-update-buffer* idx status) status)
-        (set! (-> *interaction-update-buffer* idx ename) name)
-        (set! (-> *interaction-update-buffer* idx level) level)
-        (set! (-> *interaction-update-buffer* idx parent) parent)
+        (mp-copy-string! (-> *interaction-update-buffer* idx ename) name)
+        (mp-copy-string! (-> *interaction-update-buffer* idx level) level)
+        (mp-copy-string! (-> *interaction-update-buffer* idx parent) parent)
 
         (set! (-> *interaction-update-buffer* idx has_update?) #t)
         (return #t)
@@ -60,9 +60,9 @@
         (set! (-> *self-player-info* inter_type) (-> *interaction-update-buffer* idx type))
         (set! (-> *self-player-info* inter_amount) (-> *interaction-update-buffer* idx amount))
         (set! (-> *self-player-info* inter_status) (-> *interaction-update-buffer* idx status))
-        (set! (-> *self-player-info* inter_name) (-> *interaction-update-buffer* idx ename))
-        (set! (-> *self-player-info* inter_parent) (-> *interaction-update-buffer* idx parent))
-        (set! (-> *self-player-info* inter_level) (-> *interaction-update-buffer* idx level))
+        (mp-copy-string! (-> *self-player-info* inter_name) (-> *interaction-update-buffer* idx ename))
+        (mp-copy-string! (-> *self-player-info* inter_parent) (-> *interaction-update-buffer* idx parent))
+        (mp-copy-string! (-> *self-player-info* inter_level) (-> *interaction-update-buffer* idx level))
 
         (set! *has-none-position-update?* #t)
 
@@ -73,6 +73,103 @@
     )
   (none)
 )
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Shared World Pickups
+;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(define-extern get-current-level-name (function string))
+(define-extern coop-init (function none)) ;; mod-coop
+(define-extern coop-update (function none))
+
+(defun mp-on-local-pickup ((this process-drawable))
+  "Called from collectable do-pickup. Sends orb/gem pickups with the entity name so teammates remove the same item."
+  (when (and *self-setup-completed* (type? this collectable))
+    (let* ((c (the-as collectable this))
+           (ptype (-> c fact pickup-type)))
+      (when (or (= ptype (pickup-type gem)) (= ptype (pickup-type skill)))
+        (add-interaction-to-buffer
+          (if (= ptype (pickup-type gem)) (interaction-type gem) (interaction-type skill))
+          (-> c fact pickup-amount)
+          0.0
+          ;; only placed items have their own entity, drops (crates/enemies) just sync the counter
+          (if (and (-> c entity) (= c (-> c entity extra process)))
+            (res-lump-struct (-> c entity) 'name string)
+            ""
+            )
+          (get-current-level-name)
+          "entity-pool"
+          )
+        )
+      )
+    )
+  (none)
+  )
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Shared Combat (phase 3)
+;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(defconstant MP_ENEMY_HP_PER_PLAYER 0.5) ;; extra enemy health per extra player (2 players = x1.5)
+
+(defun mp-type-is? ((t type) (name symbol))
+  "Does type t (or one of its parents) have this name? Lets us test for types defined in level code (like bot)."
+  (while (and t (!= t object))
+    (if (= (-> t symbol) name)
+      (return #t)
+      )
+    (set! t (-> t parent))
+    )
+  #f
+  )
+
+(defun mp-coop-enemy? ((this process-drawable))
+  "Enemies we share: placed in the map (own entity), not allies (bot: kid, kor, escorts...) and not bosses."
+  (and (-> this entity)
+       (= this (-> this entity extra process))
+       (not (mp-type-is? (-> this type) 'bot))
+       (not (mp-type-is? (-> this type) 'krew-boss))
+       (not (mp-type-is? (-> this type) 'krew-boss-clone))
+       )
+  )
+
+(defun mp-player-count ()
+  (let ((n 1))
+    (dotimes (idx MAX_MULTIPLAYER_COUNT)
+      (if (and (!= idx (-> *multiplayer-info* player_num)) (is-interactive? idx))
+        (+! n 1)
+        )
+      )
+    n
+    )
+  )
+
+(defun mp-scale-enemy-hp ((this process-drawable) (hp int))
+  "Called from enemy init. More players = tougher enemies, so killing them together isn't trivial."
+  (if (and *self-setup-completed* (> hp 0) (> (mp-player-count) 1)
+           (not (mp-type-is? (-> this type) 'bot))
+           (not (mp-type-is? (-> this type) 'krew-boss))
+           (not (mp-type-is? (-> this type) 'krew-boss-clone)))
+    (the int (+ 0.999 (* (the float hp) (+ 1.0 (* MP_ENEMY_HP_PER_PLAYER (the float (+ (mp-player-count) -1)))))))
+    hp
+    )
+  )
+
+(defun mp-on-enemy-dying ((this process-drawable))
+  "Called from enemy dying. Remote kills are pre-flagged spawn-gem (see mp-kill-remote-enemy), so they aren't echoed back."
+  (when (and *self-setup-completed* (type? this enemy) (mp-coop-enemy? this)
+             (not (logtest? (enemy-flag spawn-gem) (-> (the-as enemy this) enemy-flags))))
+    (add-interaction-to-buffer
+      (interaction-type enemy-death)
+      1.0
+      0.0
+      (res-lump-struct (-> this entity) 'name string)
+      (get-current-level-name)
+      "entity-pool"
+      )
+    )
+  (none)
+  )
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Task Completion Polling
@@ -88,7 +185,7 @@
     )
   (set! *prev-fuel* (the int (-> *game-info* fuel)))
   (set! *prev-gem-count* (the int (-> *game-info* gem)))
-  (set! *prev-money-count* (the int (-> *game-info* money)))
+  (set! *prev-money-count* (the int (-> *game-info* skill)))
   (set! *tracker-initialized* #t)
   (none)
   )
@@ -101,15 +198,21 @@
     )
   )
 
+(defconstant MP_MAX_LIVE_TASKS 2) ;; more new tasks than this in one frame = a save was loaded
+(defconstant MP_MAX_LIVE_PICKUPS 5) ;; same idea for gem/orb counters
+
 (defun check-task-completions ()
-  "Poll for newly completed missions and send interaction data"
-  (let ((current-fuel (the int (-> *game-info* fuel))))
-    (when (> current-fuel *prev-fuel*)
-      ;; Mission(s) completed - find which task(s) are newly complete
-      (dotimes (idx MAX_GAME_TASKS)
-        (when (and (task-complete? *game-info* (the-as game-task idx))
-                   (zero? (-> *task-tracker* sent idx)))
-          (set! (-> *task-tracker* sent idx) (the uint8 1))
+  "Poll the task list for newly completed missions and send them to teammates"
+  (let ((new-count 0))
+    (dotimes (idx MAX_GAME_TASKS)
+      (if (and (task-complete? *game-info* (the-as game-task idx)) (zero? (-> *task-tracker* sent idx)))
+        (+! new-count 1)
+        )
+      )
+    (dotimes (idx MAX_GAME_TASKS)
+      (when (and (task-complete? *game-info* (the-as game-task idx)) (zero? (-> *task-tracker* sent idx)))
+        (set! (-> *task-tracker* sent idx) (the uint8 1))
+        (if (<= new-count MP_MAX_LIVE_TASKS)
           (add-interaction-to-buffer
             (interaction-type game-task)
             (the float idx)
@@ -120,44 +223,31 @@
             )
           )
         )
-      (set! *prev-fuel* current-fuel)
       )
     )
   (none)
   )
 
 (defun check-gem-pickups ()
-  "Poll for gem count changes and send interaction data"
-  (let ((current-gems (the int (-> *game-info* gem))))
-    (when (> current-gems *prev-gem-count*)
-      (add-interaction-to-buffer
-        (interaction-type gem)
-        (the float (- current-gems *prev-gem-count*))
-        0.0
-        "gem"
-        (get-current-level-name)
-        "entity-pool"
-        )
-      (set! *prev-gem-count* current-gems)
+  "Poll for skull gem count changes and send interaction data"
+  (let* ((current-gems (the int (-> *game-info* gem)))
+         (diff (- current-gems *prev-gem-count*)))
+    (when (and (> diff 0) (<= diff MP_MAX_LIVE_PICKUPS))
+      (add-interaction-to-buffer (interaction-type gem) (the float diff) 0.0 "gem" (get-current-level-name) "entity-pool")
       )
+    (set! *prev-gem-count* current-gems)
     )
   (none)
   )
 
 (defun check-money-pickups ()
-  "Poll for precursor orb count changes and send interaction data"
-  (let ((current-money (the int (-> *game-info* money))))
-    (when (> current-money *prev-money-count*)
-      (add-interaction-to-buffer
-        (interaction-type money)
-        (the float (- current-money *prev-money-count*))
-        0.0
-        "money"
-        (get-current-level-name)
-        "entity-pool"
-        )
-      (set! *prev-money-count* current-money)
+  "Poll for precursor orb (skill) count changes and send interaction data"
+  (let* ((current-orbs (the int (-> *game-info* skill)))
+         (diff (- current-orbs *prev-money-count*)))
+    (when (and (> diff 0) (<= diff MP_MAX_LIVE_PICKUPS))
+      (add-interaction-to-buffer (interaction-type skill) (the float diff) 0.0 "skill" (get-current-level-name) "entity-pool")
       )
+    (set! *prev-money-count* current-orbs)
     )
   (none)
   )
@@ -168,6 +258,12 @@
 
 (defun init-multiplayer ()
   (when (not *self-setup-completed*)
+    ;; local player is always slot 0, the C++ side maps remote players to slots 1+
+    ;; (left at -1 the socket handler would write self info out of bounds)
+    (set! (-> *multiplayer-info* player_num) 0)
+    (set! (-> *self-player-info* mp_state) (mp-tgt-state mp-tgt-interactive))
+    (set! (-> *self-player-info* mp_state_check) (mp-tgt-state mp-tgt-interactive))
+    (coop-init) ;; before the handshake, the relay sends our co-op role right after it
     (pc-connect-mp-info *multiplayer-info* *self-player-info* *teamrun-info* *teamrun-levels-info*)
     (set! *self-setup-completed* #t)
     (format 0 "Jak 2 Multiplayer initialized~%")
@@ -187,15 +283,15 @@
     (set! (-> *self-player-info* trans_z) (-> *target* control trans z))
 
     ;; update quaternion from target root
-    (set! (-> *self-player-info* quat_x) (-> *target* control root-override quat x))
-    (set! (-> *self-player-info* quat_y) (-> *target* control root-override quat y))
-    (set! (-> *self-player-info* quat_z) (-> *target* control root-override quat z))
-    (set! (-> *self-player-info* quat_w) (-> *target* control root-override quat w))
+    (set! (-> *self-player-info* quat_x) (-> *target* control quat x))
+    (set! (-> *self-player-info* quat_y) (-> *target* control quat y))
+    (set! (-> *self-player-info* quat_z) (-> *target* control quat z))
+    (set! (-> *self-player-info* quat_w) (-> *target* control quat w))
 
-    ;; update animation state
-    (when (-> *target* state)
-      (set! (-> *self-player-info* tgt_state) (-> *target* state name))
-      )
+    ;; animation: jakb art group index in tgt_state, frame in zoomer_rot_y (see mod-remote-player)
+    (set! (-> *self-player-info* tgt_state)
+          (the-as symbol (target-anim-index *target*)))
+    (set! (-> *self-player-info* zoomer_rot_y) (target-anim-frame *target*))
 
     ;; update current level
     (when (level-get-target-inside *level*)
@@ -253,11 +349,17 @@
 
       ;; Poll for game state changes and send interactions
       (check-task-completions)
-      (check-gem-pickups)
-      (check-money-pickups)
+      ;; orb/gem pickups are sent from mp-on-local-pickup (collectables do-pickup hook)
+      (process-pending-remote-pickups)
 
       ;; Drain interaction buffer to self-player-info
       (check-set-interaction-from-buffer)
+
+      ;; Teammates: draw them and apply their progress
+      (render-remote-players)
+      (handle-remote-interactions)
+      (coop-update)
+      (mp-draw-gate-message)
 
       ;; Update and send position
       (update-self-multiplayer-info)
@@ -352,6 +454,8 @@
     (('load-end)
       (set! *pause-multiplayer-logic* #f)
       (set! (-> *teamrun-info* just_loaded?) 1)
+      ;; a loaded save isn't new progress, re-baseline so it isn't broadcast
+      (set! *tracker-initialized* #f)
       (update-state)
       )
     )
