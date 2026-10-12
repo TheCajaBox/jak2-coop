@@ -1,0 +1,436 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Jak 2 Co-op</title>
+<meta name="description" content="Play Jak 2 (OpenGOAL) together: see each other, share missions, orbs and gems.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Bebas+Neue&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@500&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg: #0d0b12;
+    --bg-2: #15121d;
+    --card: #1b1725;
+    --card-2: #221d2e;
+    --line: #2f2840;
+    --text: #ece8f4;
+    --muted: #a59cb8;
+    --eco: #a855f7;        /* dark eco */
+    --eco-soft: #a855f733;
+    --amber: #f5b301;      /* haven city / precursor */
+    --amber-soft: #f5b30122;
+    --blue: #38bdf8;       /* light eco */
+    --ok: #4ade80;
+    --warn: #fb923c;
+    --radius: 14px;
+  }
+  * { box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+  body {
+    margin: 0;
+    background:
+      radial-gradient(1200px 600px at 85% -10%, #a855f726, transparent 60%),
+      radial-gradient(900px 500px at -10% 10%, #f5b30114, transparent 60%),
+      var(--bg);
+    color: var(--text);
+    font: 16px/1.6 Inter, system-ui, sans-serif;
+  }
+  a { color: var(--amber); }
+  code, .mono { font-family: "JetBrains Mono", ui-monospace, monospace; font-size: .9em; }
+  code { background: #ffffff10; padding: .1em .4em; border-radius: 6px; }
+  .wrap { max-width: 1040px; margin: 0 auto; padding: 0 16px; }
+
+  /* lang toggle */
+  [data-lang="en"] .es, [data-lang="es"] .en { display: none !important; }
+
+  /* top bar */
+  .bar { position: sticky; top: 0; z-index: 10; backdrop-filter: blur(10px); background: #0d0b12cc; border-bottom: 1px solid var(--line); }
+  .bar .wrap { display: flex; align-items: center; gap: 16px; height: 56px; }
+  .brand { font-family: "Bebas Neue", Impact, sans-serif; font-size: 26px; letter-spacing: 1px; color: var(--text); text-decoration: none; }
+  .brand b { color: var(--amber); font-weight: 400; }
+  .bar nav { display: flex; gap: 18px; margin-left: auto; }
+  .bar nav a { color: var(--muted); text-decoration: none; font-weight: 500; font-size: 14px; }
+  .bar nav a:hover { color: var(--text); }
+  .lang { display: flex; border: 1px solid var(--line); border-radius: 999px; overflow: hidden; }
+  .lang button { background: none; border: 0; color: var(--muted); padding: 6px 12px; font: 600 13px Inter, sans-serif; cursor: pointer; }
+  .lang button[aria-pressed="true"] { background: var(--eco); color: #fff; }
+  @media (max-width: 720px) { .bar nav { display: none; } .lang { margin-left: auto; } }
+
+  /* hero */
+  .hero { padding: 72px 0 56px; }
+  .hero .tag { display: inline-flex; align-items: center; gap: 8px; color: var(--eco); background: var(--eco-soft); border: 1px solid #a855f755; padding: 4px 12px; border-radius: 999px; font-size: 13px; font-weight: 600; }
+  .hero h1 { font-family: "Bebas Neue", Impact, sans-serif; font-weight: 400; font-size: clamp(56px, 11vw, 112px); line-height: .9; margin: 18px 0 12px; letter-spacing: 1px; }
+  .hero h1 span { color: var(--amber); text-shadow: 0 0 40px #f5b30155; }
+  .hero p.lead { font-size: 19px; color: var(--muted); max-width: 640px; margin: 0 0 28px; }
+  .cta { display: flex; flex-wrap: wrap; gap: 12px; }
+  .btn { display: inline-flex; align-items: center; gap: 10px; padding: 12px 20px; border-radius: 12px; font-weight: 700; text-decoration: none; border: 1px solid transparent; transition: transform .15s, box-shadow .15s; }
+  .btn:hover { transform: translateY(-2px); }
+  .btn.primary { background: var(--amber); color: #1a1300; box-shadow: 0 8px 30px #f5b30140; }
+  .btn.ghost { border-color: var(--line); color: var(--text); background: var(--card); }
+  .feat { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 14px; margin-top: 48px; }
+  .feat div { background: var(--card); border: 1px solid var(--line); border-radius: var(--radius); padding: 18px; }
+  .feat .ico { font-size: 22px; }
+  .feat h3 { margin: 8px 0 4px; font-size: 16px; }
+  .feat p { margin: 0; color: var(--muted); font-size: 14px; }
+
+  section { padding: 56px 0; border-top: 1px solid var(--line); }
+  h2 { font-family: "Bebas Neue", Impact, sans-serif; font-weight: 400; font-size: 44px; letter-spacing: 1px; margin: 0 0 8px; }
+  h2 small { display: block; font-family: Inter, sans-serif; font-size: 15px; color: var(--muted); letter-spacing: 0; font-weight: 500; }
+
+  /* requirements */
+  .req { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 12px; margin-top: 24px; }
+  .req div { display: flex; gap: 12px; align-items: flex-start; background: var(--bg-2); border: 1px solid var(--line); border-radius: 12px; padding: 14px; }
+  .req .chk { flex: none; width: 22px; height: 22px; border-radius: 50%; background: #4ade8022; color: var(--ok); display: grid; place-items: center; font-size: 13px; font-weight: 700; }
+  .req .no { background: #a855f722; color: var(--eco); }
+  .req p { margin: 0; font-size: 14px; color: var(--muted); }
+  .req strong { color: var(--text); display: block; font-size: 15px; }
+
+  /* tabs */
+  .tabs { display: inline-flex; background: var(--bg-2); border: 1px solid var(--line); border-radius: 12px; padding: 4px; margin: 24px 0 8px; flex-wrap: wrap; }
+  .tabs button { background: none; border: 0; color: var(--muted); padding: 10px 16px; border-radius: 9px; font: 600 14px Inter, sans-serif; cursor: pointer; }
+  .tabs button[aria-selected="true"] { background: var(--card-2); color: var(--text); box-shadow: inset 0 0 0 1px var(--line); }
+  .panel[hidden] { display: none; }
+
+  /* steps */
+  .steps { list-style: none; padding: 0; margin: 24px 0 0; counter-reset: s; position: relative; }
+  .steps > li { counter-increment: s; position: relative; padding: 0 0 28px 64px; }
+  .steps > li::before {
+    content: counter(s); position: absolute; left: 0; top: 0; width: 44px; height: 44px; border-radius: 12px;
+    display: grid; place-items: center; font: 400 26px "Bebas Neue", Impact, sans-serif;
+    background: linear-gradient(135deg, var(--eco), #6d28d9); color: #fff; box-shadow: 0 6px 24px #a855f74d;
+  }
+  .steps > li::after { content: ""; position: absolute; left: 21px; top: 52px; bottom: 6px; width: 2px; background: var(--line); }
+  .steps > li:last-child::after { display: none; }
+  .step { background: var(--card); border: 1px solid var(--line); border-radius: var(--radius); padding: 18px 20px; }
+  .step h3 { margin: 0 0 6px; font-size: 18px; }
+  .step p { margin: 6px 0; color: var(--muted); }
+  .step p strong, .step li strong { color: var(--text); }
+  .step ul { margin: 8px 0 0; padding-left: 20px; color: var(--muted); }
+  .file { display: inline-flex; align-items: center; gap: 6px; font-family: "JetBrains Mono", monospace; font-size: 13px; background: var(--amber-soft); color: var(--amber); border: 1px solid #f5b30144; padding: 2px 8px; border-radius: 6px; }
+  .once { display: inline-block; font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .5px; color: var(--blue); background: #38bdf81a; border: 1px solid #38bdf844; padding: 1px 8px; border-radius: 999px; margin-left: 6px; vertical-align: 2px; }
+  .choice { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 10px; }
+  @media (max-width: 560px) { .choice { grid-template-columns: 1fr; } }
+  .choice div { border: 1px solid var(--line); border-radius: 10px; padding: 12px; background: var(--bg-2); }
+  .choice b { color: var(--amber); font-family: "Bebas Neue", Impact, sans-serif; font-size: 22px; font-weight: 400; margin-right: 6px; }
+  .choice p { margin: 4px 0 0; font-size: 14px; }
+  .note { display: flex; gap: 10px; margin-top: 12px; padding: 10px 12px; border-radius: 10px; background: #fb923c14; border: 1px solid #fb923c40; color: #fed7aa; font-size: 14px; }
+
+  .code { position: relative; margin-top: 10px; background: #0a0810; border: 1px solid var(--line); border-radius: 10px; padding: 12px 52px 12px 14px; overflow-x: auto; white-space: pre; font: 500 13px/1.7 "JetBrains Mono", monospace; color: #d8d0ea; }
+  .code .c { color: #7d7392; }
+  .code .h { color: var(--amber); }
+  .copy { position: absolute; top: 8px; right: 8px; background: var(--card-2); border: 1px solid var(--line); color: var(--muted); border-radius: 8px; padding: 4px 8px; font: 600 12px Inter, sans-serif; cursor: pointer; }
+  .copy:hover { color: var(--text); }
+
+  /* diagram */
+  .diagram { margin-top: 24px; background: var(--bg-2); border: 1px solid var(--line); border-radius: var(--radius); padding: 18px; }
+  .diagram svg { width: 100%; height: auto; display: block; }
+  .how { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 14px; margin-top: 18px; }
+  .how div { background: var(--card); border: 1px solid var(--line); border-radius: var(--radius); padding: 16px 18px; }
+  .how h3 { margin: 0 0 6px; font-size: 16px; }
+  .how p { margin: 0; color: var(--muted); font-size: 14px; }
+
+  /* faq */
+  details { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 0 18px; margin-top: 10px; }
+  summary { cursor: pointer; padding: 14px 0; font-weight: 600; list-style: none; display: flex; justify-content: space-between; gap: 12px; }
+  summary::-webkit-details-marker { display: none; }
+  summary::after { content: "+"; color: var(--eco); font-size: 20px; line-height: 1; }
+  details[open] summary::after { content: "–"; }
+  details p, details ul { color: var(--muted); margin: 0 0 14px; }
+
+  footer { border-top: 1px solid var(--line); padding: 36px 0 48px; color: var(--muted); font-size: 14px; }
+  footer p { margin: 6px 0; }
+</style>
+</head>
+<body data-lang="es">
+
+<header class="bar">
+  <div class="wrap">
+    <a class="brand" href="#top">JAK 2 <b>CO-OP</b></a>
+    <nav>
+      <a href="#req"><span class="es">Requisitos</span><span class="en">Requirements</span></a>
+      <a href="#install"><span class="es">Instalación</span><span class="en">Install</span></a>
+      <a href="#progress"><span class="es">Partidas</span><span class="en">Saves</span></a>
+      <a href="#how"><span class="es">Cómo funciona</span><span class="en">How it works</span></a>
+      <a href="#roadmap"><span class="es">Hoja de ruta</span><span class="en">Roadmap</span></a>
+      <a href="#faq">FAQ</a>
+    </nav>
+    <div class="lang" role="group" aria-label="Language">
+      <button type="button" data-set-lang="es" aria-pressed="true">ES</button>
+      <button type="button" data-set-lang="en" aria-pressed="false">EN</button>
+    </div>
+  </div>
+</header>
+
+<main id="top">
+  <div class="wrap hero">
+    <span class="tag">◆ OpenGOAL · Teamruns · <span class="es">Mod no oficial</span><span class="en">Unofficial mod</span></span>
+    <h1>Jak 2,<br><span class="es">juntos.</span><span class="en">together.</span></h1>
+    <p class="lead">
+      <span class="es">Jugad a Jak 2 con amigos: os unís a la partida del host, os veis correr por Haven City, peleáis contra los mismos enemigos y compartís misiones, orbes y gemas. En la misma casa o cada uno en la suya.</span>
+      <span class="en">Play Jak 2 with friends: join the host's game, see each other run through Haven City, fight the same enemies and share missions, orbs and gems. In the same house or each from their own.</span>
+    </p>
+    <div class="cta">
+      <a class="btn primary" data-repo-link="/releases/latest">⬇ <span class="es">Descargar</span><span class="en">Download</span></a>
+      <a class="btn ghost" href="#install"><span class="es">Ver los pasos</span><span class="en">See the steps</span> →</a>
+      <a class="btn ghost" data-repo-link="">GitHub</a>
+    </div>
+
+    <div class="feat">
+      <div><div class="ico">💾</div><h3><span class="es">La partida del host</span><span class="en">The host's game</span></h3><p><span class="es">Al conectarte cargas la partida del host: mismo progreso y mismo sitio. Tu partida no se toca.</span><span class="en">On connect you load the host's save: same progress, same place. Your own save is untouched.</span></p></div>
+      <div><div class="ico">👥</div><h3><span class="es">Os veis</span><span class="en">See each other</span></h3><p><span class="es">Cada jugador aparece como otro Jak, con su color, su nombre y sus animaciones.</span><span class="en">Every player shows up as another Jak, with their color, name and animations.</span></p></div>
+      <div><div class="ico">⚔️</div><h3><span class="es">Enemigos compartidos</span><span class="en">Shared enemies</span></h3><p><span class="es">Cada enemigo ataca al que tiene más cerca; los golpes de todos cuentan y las muertes llegan a todos.</span><span class="en">Each enemy attacks whoever is closest; everyone's hits count and deaths reach everyone.</span></p></div>
+      <div><div class="ico">🚨</div><h3><span class="es">Guardias y alerta</span><span class="en">Guards and alert</span></h3><p><span class="es">Cerca del host veis los mismos guardias (también en el minimapa) y la alerta de la ciudad se comparte.</span><span class="en">Near the host you see the same guards (minimap included) and the city alert is shared.</span></p></div>
+      <div><div class="ico">🟠</div><h3><span class="es">Mundo compartido</span><span class="en">Shared world</span></h3><p><span class="es">Misiones, orbes y gemas: lo que consigue uno lo tienen todos, y lo cogido desaparece para todos.</span><span class="en">Missions, orbs and gems: what one gets everyone gets, and picked-up items disappear for all.</span></p></div>
+      <div><div class="ico">🚪</div><h3><span class="es">Puerta de misión</span><span class="en">Mission gate</span></h3><p><span class="es">Las misiones y carreras solo empiezan si estáis juntos. Si no: "Esperando a…".</span><span class="en">Missions and races only start when you're together. Otherwise: "Waiting for…".</span></p></div>
+    </div>
+  </div>
+
+  <section id="req">
+    <div class="wrap">
+      <h2><span class="es">Requisitos</span><span class="en">Requirements</span><small><span class="es">Para cada jugador</span><span class="en">For every player</span></small></h2>
+      <div class="req">
+        <div><span class="chk">✓</span><p><strong><span class="es">Tu ISO de Jak 2</span><span class="en">Your Jak 2 ISO</span></strong><span class="es">De tu copia de PS2. No se incluye ningún archivo del juego.</span><span class="en">From your PS2 copy. No game files are included.</span></p></div>
+        <div><span class="chk">✓</span><p><strong>Windows 10 / 11 (64-bit)</strong><span class="es">Y unos 10 GB libres.</span><span class="en">And about 10 GB free.</span></p></div>
+        <div><span class="chk">✓</span><p><strong><span class="es">Gráfica con OpenGL 4.3</span><span class="en">GPU with OpenGL 4.3</span></strong><span class="es">Cualquiera de los últimos ~10 años.</span><span class="en">Anything from the last ~10 years.</span></p></div>
+        <div><span class="chk">✓</span><p><strong><span class="es">Internet al instalar</span><span class="en">Internet during setup</span></strong><span class="es">Se instalan solos el Visual C++ Runtime y, si hace falta, Tailscale.</span><span class="en">The Visual C++ Runtime and, if needed, Tailscale install automatically.</span></p></div>
+        <div><span class="chk no">✕</span><p><strong><span class="es">No hace falta OpenGOAL</span><span class="en">OpenGOAL not needed</span></strong><span class="es">El paquete trae su propia versión.</span><span class="en">The package ships its own build.</span></p></div>
+        <div><span class="chk">✓</span><p><strong><span class="es">Solo el host: Node.js</span><span class="en">Host only: Node.js</span></strong><span class="es">Para el relay. <a href="https://nodejs.org">nodejs.org</a></span><span class="en">For the relay. <a href="https://nodejs.org">nodejs.org</a></span></p></div>
+      </div>
+    </div>
+  </section>
+
+  <section id="install">
+    <div class="wrap">
+      <h2><span class="es">Instalación paso a paso</span><span class="en">Step-by-step setup</span><small><span class="es">Un jugador hace de <b>host</b> (ejecuta el relay). Los demás son jugadores normales.</span><span class="en">One player is the <b>host</b> (runs the relay). Everyone else is a regular player.</span></small></h2>
+
+      <div class="tabs" role="tablist">
+        <button type="button" role="tab" aria-selected="true" aria-controls="p-player" id="t-player">🎮 <span class="es">Jugador</span><span class="en">Player</span></button>
+        <button type="button" role="tab" aria-selected="false" aria-controls="p-host" id="t-host">🛰 Host</button>
+        <button type="button" role="tab" aria-selected="false" aria-controls="p-play" id="t-play">▶ <span class="es">Cada partida</span><span class="en">Every session</span></button>
+      </div>
+
+      <!-- PLAYER -->
+      <div class="panel" role="tabpanel" id="p-player" aria-labelledby="t-player">
+        <ol class="steps">
+          <li><div class="step">
+            <h3><span class="es">Descarga y descomprime</span><span class="en">Download and unzip</span><span class="once"><span class="es">una vez</span><span class="en">once</span></span></h3>
+            <p><span class="es">Descarga <span class="file">jak2-coop.zip</span> y descomprímelo en una carpeta con espacio, por ejemplo <code>D:\Juegos\jak2-coop</code>.</span><span class="en">Download <span class="file">jak2-coop.zip</span> and unzip it somewhere with space, e.g. <code>D:\Games\jak2-coop</code>.</span></p>
+          </div></li>
+          <li><div class="step">
+            <h3><span class="es">Arrastra tu ISO a SETUP.bat</span><span class="en">Drag your ISO onto SETUP.bat</span><span class="once"><span class="es">una vez</span><span class="en">once</span></span></h3>
+            <p><span class="es">La ISO puede estar en cualquier carpeta. Suéltala sobre <span class="file">SETUP.bat</span>, o ábrelo y arrastra la ISO a la ventana y pulsa <strong>Enter</strong>.</span><span class="en">The ISO can be anywhere. Drop it onto <span class="file">SETUP.bat</span>, or open it, drag the ISO into the window and press <strong>Enter</strong>.</span></p>
+            <p><span class="es">Tarda <strong>10–30 minutos</strong>. Espera a que diga <code>Done!</code>. Después puedes borrar la ISO si quieres.</span><span class="en">Takes <strong>10–30 minutes</strong>. Wait for <code>Done!</code>. You can delete the ISO afterwards.</span></p>
+          </div></li>
+          <li><div class="step">
+            <h3><span class="es">Configura la red</span><span class="en">Set up the network</span><span class="once"><span class="es">una vez</span><span class="en">once</span></span></h3>
+            <p><span class="es">Abre <span class="file">NETWORK-SETUP.bat</span> y acepta el permiso de administrador. Te pregunta dónde está tu PC:</span><span class="en">Open <span class="file">NETWORK-SETUP.bat</span> and accept the admin prompt. It asks where your PC is:</span></p>
+            <div class="choice">
+              <div><b>1</b><strong><span class="es">Misma casa que el host</span><span class="en">Same house as the host</span></strong><p><span class="es">Mismo Wi-Fi o router. Solo añade la regla del firewall.</span><span class="en">Same Wi-Fi or router. Only adds the firewall rule.</span></p></div>
+              <div><b>2</b><strong><span class="es">Otra casa</span><span class="en">Another house</span></strong><p><span class="es">Instala Tailscale. <strong>Antes</strong>, acepta la invitación que te mandó el host.</span><span class="en">Installs Tailscale. <strong>First</strong>, accept the invite the host sent you.</span></p></div>
+            </div>
+            <p><span class="es">El firewall solo se abre para tu red de casa y Tailscale, no para todo internet.</span><span class="en">The firewall only opens for your home network and Tailscale, not the whole internet.</span></p>
+          </div></li>
+          <li><div class="step">
+            <h3><span class="es">Manda tu dirección al host</span><span class="en">Send your address to the host</span><span class="once"><span class="es">una vez</span><span class="en">once</span></span></h3>
+            <p><span class="es">Al final, <span class="file">NETWORK-SETUP.bat</span> muestra una dirección: <code>192.168.x.x</code> (misma casa) o <code>100.x.x.x</code> (Tailscale). Mándasela al host.</span><span class="en">At the end, <span class="file">NETWORK-SETUP.bat</span> shows an address: <code>192.168.x.x</code> (same house) or <code>100.x.x.x</code> (Tailscale). Send it to the host.</span></p>
+          </div></li>
+        </ol>
+      </div>
+
+      <!-- HOST -->
+      <div class="panel" role="tabpanel" id="p-host" aria-labelledby="t-host" hidden>
+        <ol class="steps">
+          <li><div class="step">
+            <h3><span class="es">Instala el juego como un jugador más</span><span class="en">Install the game like any player</span><span class="once"><span class="es">una vez</span><span class="en">once</span></span></h3>
+            <p><span class="es">Sigue los pasos 1 y 2 de la pestaña <strong>Jugador</strong>. El host no necesita <span class="file">NETWORK-SETUP.bat</span> para su propio juego. Instala también <a href="https://nodejs.org">Node.js</a>.</span><span class="en">Do steps 1 and 2 from the <strong>Player</strong> tab. The host doesn't need <span class="file">NETWORK-SETUP.bat</span> for their own game. Also install <a href="https://nodejs.org">Node.js</a>.</span></p>
+          </div></li>
+          <li><div class="step">
+            <h3><span class="es">¿Alguien juega desde otra casa?</span><span class="en">Anyone playing from another house?</span><span class="once"><span class="es">una vez</span><span class="en">once</span></span></h3>
+            <p><span class="es">Abre <span class="file">host\HOST-TAILSCALE.bat</span>: instala Tailscale, inicia sesión (cuenta gratis) y abre la página de usuarios. Pulsa <strong>Invite users</strong> y manda el enlace.</span><span class="en">Run <span class="file">host\HOST-TAILSCALE.bat</span>: it installs Tailscale, signs you in (free account) and opens the users page. Click <strong>Invite users</strong> and send the link.</span></p>
+            <p><span class="es">Si todos estáis en la misma casa, sáltate este paso.</span><span class="en">If everyone is in the same house, skip this step.</span></p>
+          </div></li>
+          <li><div class="step">
+            <h3><span class="es">Escribe los jugadores en players.txt</span><span class="en">List the players in players.txt</span><span class="once"><span class="es">una vez</span><span class="en">once</span></span></h3>
+            <p><span class="es">Un jugador por línea, <code>Nombre@dirección:8111</code>. Tu propio juego es <code>127.0.0.1</code> con <code>#0</code> (primer mando).</span><span class="en">One player per line, <code>Name@address:8111</code>. Your own game is <code>127.0.0.1</code> with <code>#0</code> (first controller).</span></p>
+<div class="code"><button class="copy" type="button">copy</button><span class="c"># players.txt</span>
+<span class="h">Host</span>@127.0.0.1:8111#0
+<span class="h">Player2</span>@192.168.1.20:8111
+<span class="h">Player3</span>@100.71.4.12:8111</div>
+          </div></li>
+        </ol>
+      </div>
+
+      <!-- EVERY SESSION -->
+      <div class="panel" role="tabpanel" id="p-play" aria-labelledby="t-play" hidden>
+        <ol class="steps">
+          <li><div class="step">
+            <h3><span class="es">Todos abren PLAY.bat</span><span class="en">Everyone opens PLAY.bat</span></h3>
+            <p><span class="es">El host carga <strong>su</strong> partida. Los demás cargan cualquiera: al conectarse se cambiará sola a la del host.</span><span class="en">The host loads <strong>their</strong> save. Everyone else loads any save: on connect it switches to the host's.</span></p>
+          </div></li>
+          <li><div class="step">
+            <h3><span class="es">El host abre START-RELAY.bat</span><span class="en">The host opens START-RELAY.bat</span></h3>
+            <p><span class="es">Deja esa ventana abierta mientras jugáis. Muestra quién se conecta y cada misión, orbe o gema compartida:</span><span class="en">Keep that window open while you play. It shows who connects and every shared mission, orb or gem:</span></p>
+<div class="code"><button class="copy" type="button">copy</button>Waiting for games: Host@127.0.0.1:8111, Player2@192.168.1.20:8111
+[Host] connected (127.0.0.1:8111)
+[Host] in game
+[Player2] connected (192.168.1.20:8111)
+[Player2] in game
+[Player2] precursor orb <span class="h">skill-1234</span></div>
+          </div></li>
+          <li><div class="step">
+            <h3><span class="es">¡A jugar!</span><span class="en">Play!</span></h3>
+            <p><span class="es">Veréis a los demás con su nombre encima. Si alguien no aparece, el relay lo reintenta solo cada 2 segundos.</span><span class="en">You'll see everyone with their name above them. If someone doesn't show up, the relay retries every 2 seconds on its own.</span></p>
+          </div></li>
+        </ol>
+      </div>
+    </div>
+  </section>
+
+  <section id="progress">
+    <div class="wrap">
+      <h2><span class="es">Partidas y progreso</span><span class="en">Saves and progress</span><small><span class="es">Lo más importante antes de empezar</span><span class="en">The most important thing before you start</span></small></h2>
+      <div class="how">
+        <div><h3>💾 <span class="es">La partida es la del host</span><span class="en">The host's save is the game</span></h3><p><span class="es">El primero de <span class="file">players.txt</span> es el host. Al conectarse, los demás <strong>cargan su partida</strong> y aparecen en su último punto de control, con su mismo progreso.</span><span class="en">The first line of <span class="file">players.txt</span> is the host. When the others connect they <strong>load the host's save</strong> and appear at its last checkpoint, with the same progress.</span></p></div>
+        <div><h3>🛡 <span class="es">Tu partida no se toca</span><span class="en">Your own save is safe</span></h3><p><span class="es">Mientras estás unido a la partida del host, tu juego <strong>no se autoguarda</strong>, así que tu partida para jugar solo sigue intacta.</span><span class="en">While you're joined to the host's save, your game <strong>doesn't autosave</strong>, so your solo save stays intact.</span></p></div>
+        <div><h3>✅ <span class="es">Al terminar, guarda el host</span><span class="en">When you finish, the host saves</span></h3><p><span class="es">El host guarda (o deja que se autoguarde). La próxima vez, los demás vuelven a unirse y siguen justo desde ahí.</span><span class="en">The host saves (or lets autosave do it). Next time everyone joins again and carries on from there.</span></p></div>
+      </div>
+      <div class="note">⚠ <span><span class="es">Las reapariciones las decide el host: si muere otro jugador, los enemigos que el host ya mató siguen muertos; si muere el host, sus enemigos vuelven para todos.</span><span class="en">Respawns are decided by the host: if another player dies, enemies the host already killed stay dead; if the host dies, its enemies come back for everyone.</span></span></div>
+    </div>
+  </section>
+
+  <section id="how">
+    <div class="wrap">
+      <h2><span class="es">Cómo funciona</span><span class="en">How it works</span><small><span class="es">Para los curiosos</span><span class="en">For the curious</span></small></h2>
+      <div class="diagram">
+        <svg viewBox="0 0 900 300" role="img" aria-label="Relay diagram">
+          <defs>
+            <marker id="ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="#a855f7"/></marker>
+          </defs>
+          <g font-family="Inter, sans-serif" font-size="15" fill="#ece8f4">
+            <rect x="350" y="105" width="200" height="90" rx="16" fill="#221d2e" stroke="#a855f7" stroke-width="2"/>
+            <text x="450" y="143" text-anchor="middle" font-weight="700">Relay</text>
+            <text x="450" y="166" text-anchor="middle" fill="#a59cb8" font-size="13">coop-relay.js · host</text>
+
+            <rect x="30" y="30" width="210" height="80" rx="14" fill="#1b1725" stroke="#2f2840"/>
+            <text x="135" y="64" text-anchor="middle" font-weight="700" class="es">Anfitrión (host)</text><text x="135" y="64" text-anchor="middle" font-weight="700" class="en">Host</text>
+            <text x="135" y="86" text-anchor="middle" fill="#a59cb8" font-size="13">gk.exe · 127.0.0.1</text>
+
+            <rect x="30" y="190" width="210" height="80" rx="14" fill="#1b1725" stroke="#2f2840"/>
+            <text x="135" y="224" text-anchor="middle" font-weight="700" class="es">Jugador 2</text><text x="135" y="224" text-anchor="middle" font-weight="700" class="en">Player 2</text>
+            <text x="135" y="246" text-anchor="middle" fill="#a59cb8" font-size="13">gk.exe · 192.168.x.x</text>
+
+            <rect x="660" y="110" width="210" height="80" rx="14" fill="#1b1725" stroke="#2f2840"/>
+            <text x="765" y="144" text-anchor="middle" font-weight="700" class="es">Jugador 3</text><text x="765" y="144" text-anchor="middle" font-weight="700" class="en">Player 3</text>
+            <text x="765" y="166" text-anchor="middle" fill="#a59cb8" font-size="13">gk.exe · 100.x.x.x</text>
+
+            <path d="M240 70 C300 70 300 130 348 135" fill="none" stroke="#a855f7" stroke-width="2" marker-start="url(#ar)" marker-end="url(#ar)"/>
+            <path d="M240 230 C300 230 300 170 348 165" fill="none" stroke="#a855f7" stroke-width="2" marker-start="url(#ar)" marker-end="url(#ar)"/>
+            <path d="M552 150 L658 150" fill="none" stroke="#38bdf8" stroke-width="2" stroke-dasharray="6 6" marker-start="url(#ar)" marker-end="url(#ar)"/>
+            <text x="605" y="135" text-anchor="middle" fill="#38bdf8" font-size="12">Tailscale</text>
+            <text x="300" y="118" text-anchor="middle" fill="#a59cb8" font-size="12">WebSocket :8111</text>
+          </g>
+        </svg>
+      </div>
+      <div class="how">
+        <div><h3><span class="es">1 · Cada juego habla por un puerto</span><span class="en">1 · Each game talks on a port</span></h3><p><span class="es">El juego (una versión de OpenGOAL basada en Teamruns) abre un WebSocket en el puerto 8111 y manda, en cada frame, tu posición, tu animación y lo que recoges.</span><span class="en">The game (an OpenGOAL build based on Teamruns) opens a WebSocket on port 8111 and sends your position, animation and pickups every frame.</span></p></div>
+        <div><h3><span class="es">2 · El relay lo reparte</span><span class="en">2 · The relay forwards it</span></h3><p><span class="es">El host ejecuta un pequeño script de Node que se conecta a todos los juegos y le manda a cada uno los datos de los demás.</span><span class="en">The host runs a small Node script that connects to every game and sends each one everyone else's data.</span></p></div>
+        <div><h3><span class="es">3 · Jaks "marioneta"</span><span class="en">3 · "Puppet" Jaks</span></h3><p><span class="es">Cada jugador remoto se dibuja con el esqueleto de Jak, copiando su animación y el frame exacto, así que corre, salta y nada igual que el original.</span><span class="en">Each remote player is drawn with Jak's skeleton, copying their exact animation and frame, so they run, jump and swim just like the original.</span></p></div>
+        <div><h3><span class="es">4 · Mundo compartido</span><span class="en">4 · Shared world</span></h3><p><span class="es">Al coger un orbe o gema se envía su nombre único; los demás juegos borran ese mismo objeto. Si su zona no está cargada, se borra al entrar.</span><span class="en">Picking up an orb or gem sends its unique name; the other games remove that same item. If its area isn't loaded, it's removed when they get there.</span></p></div>
+        <div><h3><span class="es">5 · Enemigos por cercanía</span><span class="en">5 · Enemies by proximity</span></h3><p><span class="es">Cada enemigo "piensa" en el juego del jugador más cercano, que envía su posición, animación y vida; en los demás es una copia sin IA. Los golpes a una copia se mandan al dueño, que los aplica de verdad.</span><span class="en">Each enemy "thinks" in the closest player's game, which sends its position, animation and health; everywhere else it's a copy with no AI. Hits on a copy go to the owner, who applies them for real.</span></p></div>
+        <div><h3><span class="es">6 · Unirse a la partida</span><span class="en">6 · Joining the game</span></h3><p><span class="es">Al conectarse alguien, el juego del host guarda su partida en memoria (sin tocar el disco) y la envía; el juego del invitado la carga como si fuese de la tarjeta de memoria.</span><span class="en">When someone connects, the host's game saves in memory (without touching disk) and sends it; the guest's game loads it as if it came from the memory card.</span></p></div>
+      </div>
+    </div>
+  </section>
+
+  <section id="roadmap">
+    <div class="wrap">
+      <h2><span class="es">Hoja de ruta</span><span class="en">Roadmap</span><small><span class="es">Lo que hay y lo que viene</span><span class="en">What's here and what's next</span></small></h2>
+      <ol class="steps">
+        <li><div class="step">
+          <h3><span class="es">Co-op base</span><span class="en">Core co-op</span><span class="once" style="color:var(--ok);background:#4ade801a;border-color:#4ade8044"><span class="es">hecho</span><span class="en">done</span></span></h3>
+          <ul>
+            <li><span class="es">Ver a los demás jugadores, misiones, orbes y gemas compartidos.</span><span class="en">See other players; shared missions, orbs and gems.</span></li>
+            <li><span class="es">Misma casa o por internet con Tailscale, instaladores de un clic.</span><span class="en">Same house or over the internet with Tailscale, one-click installers.</span></li>
+          </ul>
+        </div></li>
+        <li><div class="step">
+          <h3><span class="es">Partida y combate compartidos</span><span class="en">Shared game and combat</span><span class="once" style="color:var(--ok);background:#4ade801a;border-color:#4ade8044"><span class="es">hecho</span><span class="en">done</span></span></h3>
+          <ul>
+            <li><span class="es">Unirse a la partida del host.</span><span class="en">Join the host's save.</span></li>
+            <li><span class="es">Enemigos controlados por el jugador más cercano, vida reescalada por número de jugadores.</span><span class="en">Enemies driven by the closest player, health scaled by player count.</span></li>
+            <li><span class="es">Guardias de la ciudad y alerta compartidos, puerta de misión.</span><span class="en">Shared city guards and alert, mission gate.</span></li>
+          </ul>
+        </div></li>
+        <li><div class="step">
+          <h3><span class="es">Siguiente</span><span class="en">Next</span><span class="once"><span class="es">ideas</span><span class="en">ideas</span></span></h3>
+          <ul>
+            <li><span class="es">Vehículos visibles para los demás y poder ir de paquete.</span><span class="en">Vehicles visible to others, and riding as a passenger.</span></li>
+            <li><span class="es">Que las copias de los guardias también ataquen.</span><span class="en">Guard copies that also attack.</span></li>
+            <li><span class="es">Integrarlo en el cliente de Teamruns.</span><span class="en">Integrate it into the Teamruns client.</span></li>
+          </ul>
+        </div></li>
+      </ol>
+    </div>
+  </section>
+
+  <section id="faq">
+    <div class="wrap">
+      <h2>FAQ</h2>
+      <details><summary><span class="es">¿Es pantalla dividida?</span><span class="en">Is it split screen?</span></summary><p><span class="es">No: cada jugador usa su propio PC. Para probar en un solo PC se pueden abrir dos ventanas con dos mandos, pero no es el uso normal.</span><span class="en">No: each player uses their own PC. You can test on one PC with two windows and two controllers, but that's not the normal setup.</span></p></details>
+      <details><summary><span class="es">¿Qué NO se comparte?</span><span class="en">What is NOT shared?</span></summary><ul>
+        <li><span class="es">Vehículos: quien conduce se ve como su Jak moviéndose.</span><span class="en">Vehicles: someone driving shows up as their Jak moving.</span></li>
+        <li><span class="es">Las copias de los guardias no atacan (los guardias reales de cada juego sí).</span><span class="en">Guard copies don't attack (each game's real guards do).</span></li>
+        <li><span class="es">Enemigos que aparecen por misiones u oleadas (sin nombre fijo en el mapa).</span><span class="en">Enemies spawned by missions or waves (no fixed name in the map).</span></li>
+        <li><span class="es">Las misiones que empiezan solas al entrar en una zona no pasan por la puerta de misión.</span><span class="en">Missions that start by just walking into an area skip the mission gate.</span></li>
+      </ul></details>
+      <details><summary><span class="es">No veo a los demás</span><span class="en">I can't see the others</span></summary><ul>
+        <li><span class="es">Comprueba que todos tienen <span class="file">PLAY.bat</span> abierto y una partida cargada.</span><span class="en">Make sure everyone has <span class="file">PLAY.bat</span> open and a game loaded.</span></li>
+        <li><span class="es">El relay debe mostrar <code>[Nombre] in game</code> para cada uno.</span><span class="en">The relay must show <code>[Name] in game</code> for each player.</span></li>
+        <li><span class="es">Revisa las direcciones de <span class="file">players.txt</span>. Con Tailscale, el icono debe decir <em>Connected</em> en ambos PCs.</span><span class="en">Check the addresses in <span class="file">players.txt</span>. With Tailscale, the tray icon must say <em>Connected</em> on both PCs.</span></li>
+      </ul></details>
+      <details><summary><span class="es">¿Mis dos ventanas se mueven con el mismo mando?</span><span class="en">Both windows move with the same controller?</span></summary><p><span class="es">Añade <code>#0</code>, <code>#1</code>… a cada juego local en <span class="file">players.txt</span> para asignar un mando a cada uno.</span><span class="en">Add <code>#0</code>, <code>#1</code>… to each local game in <span class="file">players.txt</span> to give each its own controller.</span></p></details>
+      <details><summary><span class="es">¿Es seguro? ¿Es legal?</span><span class="en">Is it safe? Is it legal?</span></summary><p><span class="es">No incluye ningún archivo del juego: necesitas tu propia ISO. El código es abierto (licencia ISC, como OpenGOAL). El firewall solo se abre para tu red local y Tailscale.</span><span class="en">It includes no game files: you need your own ISO. The code is open source (ISC license, like OpenGOAL). The firewall only opens to your local network and Tailscale.</span></p></details>
+    </div>
+  </section>
+</main>
+
+<footer>
+  <div class="wrap">
+    <p><span class="es">Hecho sobre</span><span class="en">Built on</span> <a href="https://github.com/open-goal/jak-project">OpenGOAL</a> · <a href="https://github.com/JoKronk/teamruns-jak-project">Teamruns</a> (JoKronk, Dexz) · <span class="es">soporte inicial de Jak 2 por</span><span class="en">initial Jak 2 groundwork by</span> ZedB0T.</p>
+    <p><span class="es">Proyecto de fans sin relación con Sony ni Naughty Dog. Jak and Daxter es una marca de Sony Interactive Entertainment.</span><span class="en">Fan project, not affiliated with Sony or Naughty Dog. Jak and Daxter is a trademark of Sony Interactive Entertainment.</span></p>
+  </div>
+</footer>
+
+<script>
+  // Repository the download/GitHub buttons point to
+  const REPO = "https://github.com/TheCajaBox/jak2-coop";
+  document.querySelectorAll("[data-repo-link]").forEach(a => a.href = REPO + a.dataset.repoLink);
+
+  // language
+  function setLang(lang) {
+    document.body.dataset.lang = lang;
+    document.documentElement.lang = lang;
+    document.querySelectorAll("[data-set-lang]").forEach(b => b.setAttribute("aria-pressed", b.dataset.setLang === lang));
+    try { localStorage.setItem("jak2coop-lang", lang); } catch (e) {}
+  }
+  document.querySelectorAll("[data-set-lang]").forEach(b => b.addEventListener("click", () => setLang(b.dataset.setLang)));
+  let saved = null;
+  try { saved = localStorage.getItem("jak2coop-lang"); } catch (e) {}
+  setLang(saved || (navigator.language || "es").toLowerCase().startsWith("es") ? (saved || "es") : "en");
+
+  // tabs
+  const tabs = document.querySelectorAll('[role="tab"]');
+  tabs.forEach(t => t.addEventListener("click", () => {
+    tabs.forEach(o => { o.setAttribute("aria-selected", o === t); document.getElementById(o.getAttribute("aria-controls")).hidden = o !== t; });
+  }));
+
+  // copy buttons
+  document.querySelectorAll(".copy").forEach(btn => btn.addEventListener("click", async () => {
+    const text = btn.parentElement.innerText.replace(/^copy\n?/, "").replace(/^copied!\n?/, "");
+    try { await navigator.clipboard.writeText(text); btn.textContent = "copied!"; setTimeout(() => btn.textContent = "copy", 1500); } catch (e) {}
+  }));
+</script>
+</body>
+</html>
